@@ -1,12 +1,10 @@
 use crate::glob;
 use crate::persist;
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use dashmap::DashMap;
 use filetime::FileTime;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -14,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use xxhash_rust::xxh3::Xxh3;
 
 pub const MANIFEST_NAME: &str = "manifest.json";
@@ -149,7 +147,7 @@ pub struct CompletePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleaned: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hardlinked: Option<u64>,
+    pub unchanged: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -169,57 +167,24 @@ struct FileEntry {
 
 #[cfg(windows)]
 fn long_path(p: &Path) -> PathBuf {
-    let s = p.as_os_str().to_string_lossy();
-    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
-        return p.to_path_buf();
+    // `\\?\`-prefixed paths require backslashes only — Windows treats forward
+    // slashes under that prefix as literal filename characters. Normalize
+    // separators *first*, then apply the prefix.
+    let normalized: String = p.as_os_str().to_string_lossy().replace('/', r"\");
+    if normalized.starts_with(r"\\?\") || normalized.starts_with(r"\\.\") {
+        return PathBuf::from(normalized);
     }
-    if p.is_absolute() {
-        // UNC paths look like \\server\share — prefix with \\?\UNC\
-        if s.starts_with(r"\\") {
-            return PathBuf::from(format!(r"\\?\UNC\{}", &s[2..]));
+    if Path::new(&normalized).is_absolute() {
+        if normalized.starts_with(r"\\") {
+            return PathBuf::from(format!(r"\\?\UNC\{}", &normalized[2..]));
         }
-        return PathBuf::from(format!(r"\\?\{}", s));
+        return PathBuf::from(format!(r"\\?\{}", normalized));
     }
-    p.to_path_buf()
+    PathBuf::from(normalized)
 }
 
 #[cfg(not(windows))]
 fn long_path(p: &Path) -> PathBuf { p.to_path_buf() }
-
-// Stable cross-volume detection: compare path roots.
-// On Windows the first path component is a `Prefix` (`C:`, `\\server\share`),
-// which is a good enough proxy for volume identity without depending on
-// unstable `MetadataExt::volume_serial_number` or pulling in `windows-sys`.
-// On Unix we have the real device id.
-
-#[derive(PartialEq, Eq)]
-pub struct VolumeId(String);
-
-#[cfg(windows)]
-fn volume_id(p: &Path) -> Option<VolumeId> {
-    use std::path::Component;
-    let abs = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::fs::canonicalize(p).ok()?
-    };
-    for comp in abs.components() {
-        if let Component::Prefix(pref) = comp {
-            let s = pref.as_os_str().to_string_lossy().to_uppercase();
-            return Some(VolumeId(s));
-        }
-    }
-    None
-}
-
-#[cfg(unix)]
-fn volume_id(p: &Path) -> Option<VolumeId> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(p).ok().map(|m| VolumeId(m.dev().to_string()))
-}
-
-#[cfg(not(any(windows, unix)))]
-fn volume_id(_: &Path) -> Option<VolumeId> { None }
 
 // ─────────────────────────────────────────────────────────────────────
 // Entry point
@@ -254,7 +219,7 @@ pub async fn run_backup(
                 duration_ms: None,
                 skipped: None,
                 cleaned: None,
-                hardlinked: None,
+                unchanged: None,
                 failed: None,
                 verified: None,
             }
@@ -320,11 +285,6 @@ async fn execute(
         return Err(anyhow!("Destination is not a directory"));
     }
 
-    let safe_name = sanitize_name(&task.name);
-    let started_at = Utc::now();
-    let timestamp = started_at.format("%Y-%m-%dT%H-%M-%S").to_string();
-    let backup_path = destination.join(format!("{}_{}", safe_name, timestamp));
-
     let _ = app.emit(
         "backup-started",
         StartedPayload {
@@ -338,73 +298,69 @@ async fn execute(
     let (files, total_bytes, skipped_count) = walk(&source, &patterns).await?;
     let total_files = files.len() as u64;
 
-    // Incremental base discovery — requires manifest.json, failed_files==0, and matching volume.
-    let dest_volume = volume_id(&destination);
-    let (base_dir, base_index) = if settings.incremental() {
-        find_previous_backup(&destination, &safe_name, &backup_path, dest_volume).await
-    } else {
-        (None, HashMap::new())
-    };
-
-    fs::create_dir_all(long_path(&backup_path)).await?;
+    // Sync mode: mirror source into the destination directly (no wrapper folder,
+    // no manifest). Files already present with matching size + mtime are skipped.
+    let target = destination.clone();
     let started = Instant::now();
     let mut copied_bytes: u64 = 0;
     let mut copied_files: u64 = 0;
-    let mut hardlinked_files: u64 = 0;
+    let mut unchanged_files: u64 = 0;
     let mut failed_files: u64 = 0;
     let mut last_emit = Instant::now();
     let mut errors: Vec<String> = Vec::new();
 
     for file in &files {
         if token.is_cancelled() {
-            let _ = fs::remove_dir_all(long_path(&backup_path)).await;
             return Err(anyhow!("ABORTED"));
         }
-        let dest_path = backup_path.join(&file.rel);
+        let dest_path = target.join(&file.rel);
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(long_path(parent)).await?;
         }
 
-        let mut linked = false;
-        if let (Some(base), Some(prev)) = (base_dir.as_ref(), base_index.get(&file.rel)) {
-            if prev.size == file.size && same_mtime(prev.mtime, file.mtime) {
-                let prev_path = base.join(&file.rel);
-                if fs::hard_link(long_path(&prev_path), long_path(&dest_path)).await.is_ok() {
-                    hardlinked_files += 1;
-                    copied_bytes += file.size;
-                    copied_files += 1;
-                    linked = true;
-                    maybe_emit(
-                        app, backup_id, &task.id, &mut last_emit, &started,
-                        copied_bytes, total_bytes, copied_files, total_files, "linking",
-                    );
+        // Skip if destination already has an identical file (size + mtime match).
+        let mut skip = false;
+        if let Ok(meta) = fs::metadata(long_path(&dest_path)).await {
+            if meta.is_file() && meta.len() == file.size {
+                if let Ok(m) = meta.modified() {
+                    if same_mtime(m, file.mtime) {
+                        skip = true;
+                    }
                 }
             }
         }
 
-        if !linked {
-            let result = copy_with_retries(&file.path, &dest_path, token, settings, |n| {
-                copied_bytes += n;
-                maybe_emit(
-                    app, backup_id, &task.id, &mut last_emit, &started,
-                    copied_bytes, total_bytes, copied_files, total_files, "copying",
-                );
-            })
-            .await;
+        if skip {
+            unchanged_files += 1;
+            copied_bytes += file.size;
+            copied_files += 1; // counts toward "processed" so progress reaches 100%
+            maybe_emit(
+                app, backup_id, &task.id, &mut last_emit, &started,
+                copied_bytes, total_bytes, copied_files, total_files, "syncing",
+            );
+            continue;
+        }
 
-            match result {
-                Ok(()) => copied_files += 1,
-                Err(e) => {
-                    if token.is_cancelled() {
-                        let _ = fs::remove_dir_all(long_path(&backup_path)).await;
-                        return Err(anyhow!("ABORTED"));
-                    }
-                    failed_files += 1;
-                    errors.push(format!("{}: {}", file.rel, e));
-                    if !settings.continue_on_error() {
-                        let _ = fs::remove_dir_all(long_path(&backup_path)).await;
-                        return Err(e);
-                    }
+        let result = copy_with_retries(&file.path, &dest_path, token, settings, |n| {
+            copied_bytes += n;
+            maybe_emit(
+                app, backup_id, &task.id, &mut last_emit, &started,
+                copied_bytes, total_bytes, copied_files, total_files, "copying",
+            );
+        })
+        .await;
+
+        match result {
+            Ok(()) => copied_files += 1,
+            Err(e) => {
+                if token.is_cancelled() {
+                    return Err(anyhow!("ABORTED"));
+                }
+                failed_files += 1;
+                warn!(target = %file.rel, "copy failed: {}", e);
+                errors.push(format!("{}: {}", file.rel, e));
+                if !settings.continue_on_error() {
+                    return Err(e);
                 }
             }
         }
@@ -427,53 +383,17 @@ async fn execute(
                 phase: "verifying",
             },
         );
-        verify_files(&files, &backup_path, token).await?;
+        verify_files(&files, &target, token).await?;
         verified = true;
     }
 
     if !errors.is_empty() {
-        let log_path = backup_path.join(ERRORS_LOG);
-        let _ = fs::write(long_path(&log_path), errors.join("\n")).await;
+        for e in &errors {
+            warn!("file error: {}", e);
+        }
     }
 
-    let finished_at = Utc::now();
     let duration_ms = started.elapsed().as_millis() as u64;
-    let manifest = Manifest {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        task_id: task.id.clone(),
-        task_name: task.name.clone(),
-        source: task.source.clone(),
-        destination: task.destination.clone(),
-        started_at: started_at.to_rfc3339(),
-        finished_at: finished_at.to_rfc3339(),
-        duration_ms,
-        total_files,
-        total_bytes,
-        copied_files: copied_files.saturating_sub(hardlinked_files),
-        hardlinked_files,
-        failed_files,
-        skipped_files: skipped_count as u64,
-        incremental_from: base_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
-        exclude_patterns: settings.exclude_patterns.clone(),
-        verified,
-    };
-    let manifest_path = backup_path.join(MANIFEST_NAME);
-    let manifest_json = serde_json::to_vec_pretty(&manifest)?;
-    fs::write(long_path(&manifest_path), &manifest_json).await?;
-
-    // fsync the manifest and the backup directory itself so a power loss can't
-    // leave us in a "looks complete" state without the manifest on disk.
-    if let Ok(f) = fs::File::open(long_path(&manifest_path)).await {
-        let _ = f.sync_all().await;
-    }
-    sync_dir(&backup_path).await;
-
-    let mut cleaned = 0u64;
-    if settings.auto_cleanup_days > 0 {
-        cleaned = cleanup_old_backups(&destination, settings.auto_cleanup_days, &safe_name, &backup_path)
-            .await
-            .unwrap_or(0);
-    }
 
     Ok(CompletePayload {
         backup_id: backup_id.to_string(),
@@ -485,25 +405,16 @@ async fn execute(
         } else {
             None
         },
-        path: Some(backup_path.to_string_lossy().to_string()),
+        path: Some(target.to_string_lossy().to_string()),
         total_bytes: Some(total_bytes),
         total_files: Some(total_files),
         duration_ms: Some(duration_ms),
         skipped: Some(skipped_count as u64),
-        cleaned: Some(cleaned),
-        hardlinked: Some(hardlinked_files),
+        cleaned: Some(0),
+        unchanged: Some(unchanged_files),
         failed: Some(failed_files),
         verified: Some(verified),
     })
-}
-
-fn sanitize_name(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-        .take(60)
-        .collect();
-    if s.is_empty() { "backup".to_string() } else { s }
 }
 
 fn same_mtime(a: SystemTime, b: SystemTime) -> bool {
@@ -512,20 +423,6 @@ fn same_mtime(a: SystemTime, b: SystemTime) -> bool {
     match (da, db) {
         (Some(x), Some(y)) => x.as_secs() == y.as_secs(),
         _ => false,
-    }
-}
-
-async fn sync_dir(path: &Path) {
-    // Windows directories can't be fsync'd via the File API; this is a no-op there.
-    #[cfg(unix)]
-    {
-        if let Ok(f) = fs::File::open(path).await {
-            let _ = f.sync_all().await;
-        }
-    }
-    #[cfg(windows)]
-    {
-        let _ = path;
     }
 }
 
@@ -635,108 +532,6 @@ async fn walk(root: &Path, patterns: &[String]) -> Result<(Vec<FileEntry>, u64, 
     Ok((files, total, skipped))
 }
 
-struct PrevEntry {
-    size: u64,
-    mtime: SystemTime,
-}
-
-async fn find_previous_backup(
-    destination: &Path,
-    safe_name: &str,
-    current: &Path,
-    dest_volume: Option<VolumeId>,
-) -> (Option<PathBuf>, HashMap<String, PrevEntry>) {
-    let pattern = match Regex::new(r"^[A-Za-z0-9_-]+_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$") {
-        Ok(r) => r,
-        Err(_) => return (None, HashMap::new()),
-    };
-    let mut entries = match fs::read_dir(long_path(destination)).await {
-        Ok(e) => e,
-        Err(_) => return (None, HashMap::new()),
-    };
-    let mut candidates: Vec<(PathBuf, DateTime<Utc>)> = Vec::new();
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy().to_string();
-        let caps = match pattern.captures(&name_str) {
-            Some(c) => c,
-            None => continue,
-        };
-        if !name_str.starts_with(&format!("{}_", safe_name)) { continue; }
-        let path = entry.path();
-        if path == current { continue; }
-        let Ok(meta) = entry.metadata().await else { continue };
-        if !meta.is_dir() { continue; }
-        // Parse timestamp from folder name rather than trusting mtime.
-        let ts_str = match caps.get(0).map(|m| m.as_str()) {
-            Some(full) => match full.rfind('_') {
-                Some(i) => &full[i + 1..],
-                None => continue,
-            },
-            None => continue,
-        };
-        let naive = chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%dT%H-%M-%S").ok();
-        let Some(naive) = naive else { continue };
-        let ts_utc: DateTime<Utc> = DateTime::from_naive_utc_and_offset(naive, Utc);
-        candidates.push((path, ts_utc));
-    }
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Require a valid manifest with failed_files == 0.
-    let mut base: Option<PathBuf> = None;
-    for (path, _) in &candidates {
-        let manifest_path = path.join(MANIFEST_NAME);
-        let Ok(bytes) = fs::read(long_path(&manifest_path)).await else { continue };
-        let Ok(m): Result<Manifest, _> = serde_json::from_slice(&bytes) else { continue };
-        if m.failed_files != 0 { continue; }
-        base = Some(path.clone());
-        break;
-    }
-    let Some(base) = base else { return (None, HashMap::new()); };
-
-    // Require matching volume id. Hardlinks across volumes always fail.
-    let base_vol = volume_id(&base);
-    if let (Some(dv), Some(bv)) = (&dest_volume, &base_vol) {
-        if dv != bv {
-            debug!("incremental base skipped: cross-volume");
-            return (None, HashMap::new());
-        }
-    }
-
-    let mut index: HashMap<String, PrevEntry> = HashMap::new();
-    let mut stack: Vec<PathBuf> = vec![base.clone()];
-    while let Some(dir) = stack.pop() {
-        let mut entries = match fs::read_dir(long_path(&dir)).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type().await else { continue };
-            if file_type.is_symlink() { continue; }
-            if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file() {
-                let Ok(meta) = fs::metadata(&path).await else { continue };
-                let rel = match path.strip_prefix(&base) {
-                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
-                    Err(_) => continue,
-                };
-                if rel == MANIFEST_NAME || rel == ERRORS_LOG { continue; }
-                index.insert(
-                    rel,
-                    PrevEntry {
-                        size: meta.len(),
-                        mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    },
-                );
-            }
-        }
-    }
-
-    (Some(base), index)
-}
-
 async fn copy_with_retries<F: FnMut(u64)>(
     src: &Path,
     dest: &Path,
@@ -835,40 +630,6 @@ async fn hash_file(path: &Path) -> Result<u64> {
     Ok(hasher.digest())
 }
 
-async fn cleanup_old_backups(
-    destination: &Path,
-    days: u32,
-    safe_name: &str,
-    skip: &Path,
-) -> Result<u64> {
-    let cutoff = Utc::now() - chrono::Duration::days(days as i64);
-    let pattern = Regex::new(r"^[A-Za-z0-9_-]+_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})$")?;
-    let mut deleted = 0u64;
-    let mut entries = fs::read_dir(long_path(destination)).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy().to_string();
-        let Ok(meta) = entry.metadata().await else { continue };
-        if !meta.is_dir() { continue; }
-        let caps = match pattern.captures(&name_str) {
-            Some(c) => c,
-            None => continue,
-        };
-        if !name_str.starts_with(&format!("{}_", safe_name)) { continue; }
-        let path = entry.path();
-        if path == skip { continue; }
-        let ts = caps.get(1).unwrap().as_str();
-        let parsed = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H-%M-%S").ok();
-        let Some(parsed) = parsed else { continue };
-        let parsed_utc: DateTime<Utc> = DateTime::from_naive_utc_and_offset(parsed, Utc);
-        if parsed_utc < cutoff {
-            if fs::remove_dir_all(long_path(&path)).await.is_ok() {
-                deleted += 1;
-            }
-        }
-    }
-    Ok(deleted)
-}
 
 #[cfg(test)]
 mod tests {

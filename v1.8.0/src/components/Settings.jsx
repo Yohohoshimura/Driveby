@@ -69,13 +69,6 @@ export default function Settings() {
       <div className="group">
         <div className="setting-row">
           <div>
-            <div className="setting-row__label">Incremental backups</div>
-            <div className="setting-row__hint">Hard-link unchanged files from the previous backup instead of re-copying. Huge disk savings.</div>
-          </div>
-          <Toggle value={settings.incremental !== false} onChange={(v) => updateSetting('incremental', v)} label="Incremental backups" />
-        </div>
-        <div className="setting-row">
-          <div>
             <div className="setting-row__label">Verify after copy</div>
             <div className="setting-row__hint">Hash (xxHash3) every copied file after writing. Slower but safer.</div>
           </div>
@@ -84,14 +77,14 @@ export default function Settings() {
         <div className="setting-row">
           <div>
             <div className="setting-row__label">Continue on error</div>
-            <div className="setting-row__hint">If a file fails to copy, keep going and write an errors.log. Otherwise abort.</div>
+            <div className="setting-row__hint">If a file fails to copy, keep going instead of aborting.</div>
           </div>
           <Toggle value={settings.continueOnError !== false} onChange={(v) => updateSetting('continueOnError', v)} label="Continue on error" />
         </div>
         <div className="setting-row">
           <div>
             <div className="setting-row__label">Preserve file modification time</div>
-            <div className="setting-row__hint">Copy each file's mtime to the backup so diffs and incrementals stay accurate.</div>
+            <div className="setting-row__hint">Copy each file's mtime so re-runs can skip unchanged files.</div>
           </div>
           <Toggle value={settings.preserveMtime !== false} onChange={(v) => updateSetting('preserveMtime', v)} label="Preserve mtime" />
         </div>
@@ -114,28 +107,6 @@ export default function Settings() {
             rows={5}
             aria-label="Exclude patterns"
           />
-        </div>
-      </div>
-
-      <div className="group-title">Maintenance</div>
-      <div className="group">
-        <div className="setting-row">
-          <div>
-            <div className="setting-row__label">Auto-cleanup old backups</div>
-            <div className="setting-row__hint">Delete BackupDrive folders older than N days after each run. 0 = off.</div>
-          </div>
-          <div className="field-row">
-            <input
-              type="number"
-              min="0"
-              max="365"
-              value={settings.autoCleanupDays}
-              onChange={(e) => updateSetting('autoCleanupDays', parseInt(e.target.value, 10) || 0)}
-              className="field field--narrow"
-              aria-label="Cleanup days"
-            />
-            <span className="subhead">days</span>
-          </div>
         </div>
       </div>
 

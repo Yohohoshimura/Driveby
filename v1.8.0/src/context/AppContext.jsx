@@ -103,7 +103,7 @@ export function AppProvider({ children }) {
             durationMs: data.durationMs,
             error: data.error,
             skipped: data.skipped,
-            hardlinked: data.hardlinked,
+            unchanged: data.unchanged,
             failed: data.failed,
             verified: data.verified,
           },
