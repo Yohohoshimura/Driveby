@@ -32,7 +32,7 @@ export default function Home() {
     <>
       <section className="stats" aria-label="Statistics">
         <div className="stat">
-          <div className="stat__head">Total Backed Up</div>
+          <div className="stat__head">Backed Up</div>
           <PieChart
             slices={[
               { value: successBytes, color: 'var(--accent)' },
