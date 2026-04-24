@@ -75,6 +75,18 @@ Built on the 1.7 audit — implemented the "big wins" block.
 - `App.jsx`: persists `sidebarOpen` and `lastView` to settings; restores on launch.
 - New settings: `incremental`, `verify`, `continueOnError`, `preserveMtime`, `sidebarOpen`, `lastView`.
 
+### 1.8 — correctness pass
+Built on the 1.7 audit — shipped the **Critical** block only.
+
+- **`lastBackup` race fixed.** Ownership moved into Rust (`backup::update_last_backup`). Rust writes `tasks.json` atomically + emits `task-updated`. Scheduler no longer rewrites the file. UI drops its auto-save effect and persists `tasks.json` only on user actions (add/edit/delete). UI listens for `task-updated` and reconciles without re-saving.
+- **Incremental base validation.** Previous-backup selection now requires `manifest.json` to parse and `failed_files == 0`. Partial/corrupt folders are skipped.
+- **Cross-volume hardlink guard.** `volume_id()` helper (Unix `MetadataExt::dev`, Windows `MetadataExt::volume_serial_number`). Mismatch short-circuits the hardlink path — no wasted per-file attempts.
+- **Windows long paths.** `long_path()` helper prefixes `\\?\` (or `\\?\UNC\`) for absolute paths; used at every fs call site.
+- **Durability.** `writer.sync_all()` after flush on every copy; manifest `sync_all`; Unix directory fsync at end of run.
+- **Scheduler simplified.** Removed the post-completion `tasks.json` rewrite block — `run_backup` handles it.
+
+**New event:** `task-updated` (Task JSON). **New bridge method:** `onTaskUpdated(cb)`.
+
 ## Key design decisions
 
 - Tauri 2 desktop-only: dropped `[lib]` crate stanza (would be needed for mobile targets).
