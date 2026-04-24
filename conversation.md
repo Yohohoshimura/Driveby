@@ -16,14 +16,14 @@ Sequence of standalone Electron + React builds, each iterating on UX.
 ### 1.6 — Tauri + Rust rewrite
 Full port: React UI kept, Electron `main.js` replaced by Rust backend. ~10× smaller installer, lower memory, safer fs ops.
 
-**Rust backend (`1.6/src-tauri/`):**
+**Rust backend (`v1.6.0/src-tauri/`):**
 - `main.rs` — Tauri 2 Builder, 8 IPC commands.
 - `backup.rs` — tokio-based copy engine, `CancellationToken` cancellation via `tokio::select!`, per-file throttled progress emit, safe timestamped folders, regex-guarded cleanup.
 - `glob.rs` — `*`, `**`, `?`, `!neg` with comma/newline separators + tests.
 - `persist.rs` — atomic JSON read/write (tmp + rename).
 - `DashMap` for concurrent active-backup tracking, `uuid v4` IDs, `serde` camelCase payloads.
 
-**React frontend (`1.6/src/`):**
+**React frontend (`v1.6.0/src/`):**
 - New sidebar layout (search + icon nav groups + brand footer), inspired by macos_ui screenshot.
 - `App.jsx`, `Sidebar.jsx`, `Toolbar.jsx` (sidebar toggle + title).
 - Ported 1.5 components to `.jsx`: Home, TaskCard, NewTaskForm, History, Settings, ConfirmDialog, Toast, common/*.
@@ -57,6 +57,23 @@ Full port: React UI kept, Electron `main.js` replaced by Rust backend. ~10× sma
 
 **Repo hygiene**
 - Added repo-root `.gitignore` covering `node_modules/`, `**/target/`, `dist/`, `src-tauri/gen/`, env files, OS/editor junk.
+
+### 1.7 — reliability + incremental + restore
+Built on the 1.7 audit — implemented the "big wins" block.
+
+**Backend**
+- `backup.rs`: manifest.json per dated folder; hardlink-based incremental (size+mtime match against the previous successful backup); xxHash3 verify pass; retry with exponential backoff (3×); continue-on-error (collect failures into `errors.log` and fail only if policy requires); mtime preservation via `filetime`; adaptive copy buffer (256 KB < 4 MiB < 1 MiB); cleanup parses the ISO timestamp from folder names instead of using folder mtime.
+- `restore.rs`: `read_manifest` + `restore(backup_path, destination)` with `restore-progress` events.
+- `scheduler.rs`: background tokio task polling tasks.json every 60 s; fires due daily/weekly/monthly tasks even when the window is closed; writes back `lastBackup` atomically.
+- `main.rs`: new plugins — `tauri-plugin-single-instance`, `tauri-plugin-window-state`, `tauri-plugin-updater` (config stub); `tracing` + `tracing-appender` rotating daily log files in `app_log_dir`; new commands `read_manifest`, `restore_backup`, `reveal_logs_folder`.
+
+**Frontend**
+- Dropped `useScheduler` (now in Rust).
+- `AppContext`: listener subscribes once; notification logic pulled from a `settingsRef`; new `restoreBackup` helper prompts for destination and confirms.
+- `History`: **Restore** button (for successful entries) alongside Reveal/Delete.
+- `Settings`: new **Backup Options** group (Incremental / Verify / Continue on error / Preserve mtime) and a **Diagnostics** group with "Open Logs…".
+- `App.jsx`: persists `sidebarOpen` and `lastView` to settings; restores on launch.
+- New settings: `incremental`, `verify`, `continueOnError`, `preserveMtime`, `sidebarOpen`, `lastView`.
 
 ## Key design decisions
 
