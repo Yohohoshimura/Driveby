@@ -87,9 +87,62 @@ Built on the 1.7 audit — shipped the **Critical** block only.
 
 **New event:** `task-updated` (Task JSON). **New bridge method:** `onTaskUpdated(cb)`.
 
+### 2.0 — sync rewrite, rebrand to Driveby, Statistics view, polish
+
+This release pivoted the backup model and rebranded the app. Active folder is now `v2.0.0/`; all earlier folders were renamed `v1.0.1-beta` … `v1.7.0-beta` (plus the former `v1.8.0` which was promoted into this release). The repo folder itself was renamed `backup-drive` → `Driveby` (then reverted at end of session — see Session-end note).
+
+**Rebrand**
+- App name **BackupDrive → Driveby** everywhere user-facing: `package.json` (`"name": "driveby"`, `"version": "2.0.0"`), `Cargo.toml` (package + `[[bin]]` name `driveby`, version 2.0.0), `tauri.conf.json` (productName, identifier `com.driveby.app`, window title, longDescription), `index.html` `<title>`, `styles.css` header, `Sidebar.jsx` brand block ("Driveby — Version 2.0"), `NewTaskForm.jsx` schedule hint, `AppContext.jsx` notification title, `capabilities/default.json`, log filename `driveby.log`, startup `info!("Driveby 2.0 starting")`, root README + v2.0.0/README.
+
+**Backup engine — major behavioral pivot (`backup.rs`)**
+- **Sync into destination directly** — no `<name>_<timestamp>` wrapper folder, no `manifest.json` written. Files matching destination by size + mtime are skipped (`unchanged_files` counter).
+- **Mirror-delete pass** — new `prune_destination(target, source_paths_set, token, &mut deleted)` walks dest, removes orphan files, then bottom-up removes now-empty directories. Emits a `phase: "pruning"` progress event. `cleaned` field of `CompletePayload` reports the count.
+- **Windows custom folder icons preserved.** New Windows-only helpers `read_attrs(p)` / `apply_attrs(p, attrs)` using `windows-sys` (added as Cargo dep, target-cfg gated). Mask = `READONLY | HIDDEN | SYSTEM` only — never propagates ARCHIVE/REPARSE_POINT. `walk()` now returns `(files, dirs, total, skipped)` so directory paths can be rewalked at end. After every file copy → apply_attrs to dest. After prune → loop over `dirs` and apply_attrs to corresponding destination dirs. Without this, `desktop.ini` lost Hidden+System and parent folders lost the System bit, so Explorer ignored the icon descriptor.
+- **Per-file progress no longer overshoots on retries.** `copy_with_retries` callback signature changed from delta-bytes to *cumulative-bytes-this-file*; on retry it calls `on_progress(0)` to reset. Caller maintains `base_bytes` snapshot per file. Without this, retried chunks accumulated and progress hit 100% while loop was still running ("stuck at 100%" symptom).
+- **Forced final 100% emit** before completion (throttled `maybe_emit` could swallow the last update).
+- **`lastBackup` always recorded on non-cancelled completion** (was `if payload.success` only). Timeout raised 5 s → 15 s. Long runs that hit a recoverable error still record their timestamp.
+- **Tracing** `info!("emitting backup-complete")` for diagnosis.
+- **Removed dead code** from the v1.7→v1.8 rewrite: `find_previous_backup`, `cleanup_old_backups`, `sanitize_name`, `sync_dir`, `VolumeId`, `volume_id`, the entire hardlink path, manifest writing, `errors.log` write, and unused imports (`DateTime`, `Regex`, `HashMap`, `debug`). Kept `MANIFEST_NAME`, `ERRORS_LOG`, `Manifest` for `restore.rs::read_manifest` backward-compat with v1.7 dated folders.
+- `CompletePayload` field `hardlinked → unchanged`. AppContext history entry updated.
+- Settings: removed `incremental` toggle from UI and "Maintenance" group (autoCleanupDays). The `incremental` field stays on the Rust struct for forward-compat with old `settings.json`. Accent color picker removed; data-accent locked to `'blue'` in AppContext (so previously-saved accent values are ignored).
+
+**Statistics view (new top-level tab)**
+- New `Statistics.jsx` route between History and Settings. Sidebar item with `BarChart3` icon. App.jsx routes + Ctrl+3 shortcut (Settings moved to Ctrl+4). TITLES updated.
+- Three new chart components in `src/components/charts/`:
+  - **`CandleChart.jsx` ("Backed Up")** — went through several iterations on user request: candle → bar → line → scatter → histogram → **stacked cumulative area chart** (final). x = run date `dd/mm`, y = cumulative bytes (auto-formatted via `formatBytes`), three stacked bands (cancelled/error/success bottom-up), accent line traces grand total, dot per run, legend below, horizontal scroll, auto-scrolls to latest. `chartHeight = 340`.
+  - **`TaskList.jsx` ("Tasks")** — vertically scrollable list (max-height 240px) with name, source→destination, last-run time, schedule.
+  - **`GroupedBarChart.jsx` ("Successful Runs")** — horizontally scrollable grouped vertical bars per task, success (accent) next to error (red). `BAR_W=28`, `GROUP_GAP=80`, `MIN_WIDTH=720` (expand horizontally per user). Y-axis ticks de-duplicated via `Set` so `maxCount=1` shows `0,1` not `0,1,1,1,1`. Gridlines positioned by tick value. Task names full (no `…` truncation), 11px.
+- Old PieChart / ProcessCycle / Speedometer files left in `charts/` but no longer imported (tree-shaken). Stats section removed from `Home.jsx`.
+- Statistics CSS in `styles.css`: `.stat-block`, `.candles*`, `.task-list-stat*`, `.grouped-bars*`, `.chart-empty`, `.legend-dot`, `.candles__legend`.
+
+**Settings UI redesign**
+- All `.setting-row__hint` description divs removed; replaced by an `i`-bubble tooltip on the left of each control.
+- New `common/InfoTip.jsx` component with `placement` prop (`'left'` default, `'right'` for stacked rows). Renders a 16px circle with italic `i` glyph; `data-tip` attribute drives a CSS pseudo-element tooltip.
+- Tooltip dialog: translucid frosted panel — `color-mix(bg-primary 78%, accent 12%)`, accent-tinted hairline border, `backdrop-filter: blur(20px)`, `label-primary` text. (Went through several iterations chasing "translucid" vs "blue enough" — landed back on the accent-mixed bg-primary version.)
+- Info bubbles excluded from Appearance and Diagnostics rows on user request.
+- `.setting-row__control { min-width: 72px; justify-content: flex-end; }` so all toggle+info pairs occupy the same right-aligned column block (16+10+36+padding = 72 px), giving symmetric alignment across General and Backup Options groups.
+- Diagnostics button label "Open Logs…" → "Open".
+
+**Other UI tweaks**
+- TaskCard: removed `formatSpeed`/`formatDuration` imports + speed/ETA/dot-separators from the right-side stat line. Only `progress%` remains during a run. Primary action label flipped "Back Up" → "Start" → "Back up".
+- Toast: `bg-window-solid` mixed with `transparent` (55%) + `backdrop-filter: blur(20px)` + softened hairline ring → translucent pill.
+- `Sidebar.jsx`: NAV section name "App" → "Application".
+- `Home.jsx`: New-task button label "+ New Task" → "New task".
+- Autofill disabled on every text-entry surface — `autoComplete="off"` (+ `autoCorrect`/`autoCapitalize`/`spellCheck={false}` and unique `name`s on writable fields) on inputs in NewTaskForm (Name, Source, Destination), Sidebar search, History search, Settings (Default destination + Exclude patterns textarea).
+
+**Versioning + cleanup**
+- All older folders renamed with `-beta` suffix via `git mv` (or `mv` fallback): `v1.0.1` … `v1.7.0` → `v1.0.1-beta` … `v1.7.0-beta`. `v1.8.0` → `v2.0.0`.
+- Repeated cleanup of build artifacts (`node_modules`, `src-tauri/target`, `src-tauri/gen`).
+- Removed dead-code warning: `fn incremental` accessor deleted from `impl Settings`.
+
+**Session-end housekeeping**
+- The repo folder was renamed `backup-drive → Driveby` externally; we then attempted to undo it back to `backup-drive`. Inside the running session the rename failed (Windows refused — `Driveby` is the cwd of this Claude Code process). An empty `backup-drive` stub was cleaned up. The user must finish the rename from outside the session: `Rename-Item Driveby backup-drive` in PowerShell, plus rename the Claude project state dir `~/.claude/projects/C--Users-Yoshimura-Documents-Github-Driveby` → `…-backup-drive` so the JSONL transcript `e048a705-0e65-40a7-8cc1-450250038fc5.jsonl` keeps pairing.
+
 ## Key design decisions
 
 - Tauri 2 desktop-only: dropped `[lib]` crate stanza (would be needed for mobile targets).
 - Settings `confirmBeforeBackup`, `showNotifications`, `theme`, `accentColor` are UI-only; they round-trip through Rust's `Settings` struct via `#[serde(flatten)] _rest: Value` so the backend doesn't need to know about them.
 - Drag-and-drop of folders into forms removed (Tauri webview doesn't expose absolute paths for dropped files the way Electron did). "Choose…" button replaces it.
-- Scheduler stays in React — automatic runs require BackupDrive to be open (same as 1.5).
+- Scheduler stays in React — automatic runs require Driveby (formerly BackupDrive) to be open (same as 1.5).
+- 2.0 sync model: source ↔ destination is a true mirror (copy + skip-if-same + delete-orphans). No timestamped wrappers, no manifest. Restore module still ships for legacy v1.7 dated backups.
+- Windows attribute preservation is essential — without `READONLY | HIDDEN | SYSTEM` propagation, custom folder icons defined via `desktop.ini` silently break in the destination.

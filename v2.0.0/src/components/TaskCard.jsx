@@ -1,6 +1,6 @@
 import React from 'react';
 import Button from './common/Button';
-import { formatTime, formatBytes } from '../lib/format';
+import { formatTime } from '../lib/format';
 
 export default function TaskCard({ task, backup, onRun, onCancel, onDelete }) {
   const isRunning = !!backup;
@@ -17,12 +17,6 @@ export default function TaskCard({ task, backup, onRun, onCancel, onDelete }) {
 
         {isRunning && (
           <div className="task__progress" aria-live="polite">
-            <div className="task__progress-row">
-              <span>
-                {backup.copiedFiles || 0} / {backup.totalFiles || 0} files · {formatBytes(backup.copiedBytes || 0)} of {formatBytes(backup.totalBytes || 0)}
-              </span>
-              <span>{backup.progress || 0}%</span>
-            </div>
             <div
               className="progressbar"
               role="progressbar"

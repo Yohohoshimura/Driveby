@@ -31,7 +31,6 @@ export default function Settings() {
             <div className="setting-row__label">Default destination</div>
           </div>
           <div className="setting-row__control" style={{ maxWidth: 380 }}>
-            <InfoTip text="Pre-fills the destination for new tasks." />
             <div className="field-row" style={{ maxWidth: 360 }}>
               <input
                 type="text"
@@ -57,7 +56,6 @@ export default function Settings() {
             <div className="setting-row__label">Confirm before each backup</div>
           </div>
           <div className="setting-row__control">
-            <InfoTip text="Show a dialog before starting any backup." />
             <Toggle value={settings.confirmBeforeBackup} onChange={(v) => updateSetting('confirmBeforeBackup', v)} label="Confirm before backup" />
           </div>
         </div>
@@ -67,7 +65,6 @@ export default function Settings() {
             <div className="setting-row__label">System notifications</div>
           </div>
           <div className="setting-row__control">
-            <InfoTip text="Notify when a backup completes." />
             <Toggle value={settings.showNotifications} onChange={(v) => updateSetting('showNotifications', v)} label="System notifications" />
           </div>
         </div>

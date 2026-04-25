@@ -1,144 +1,130 @@
 import React, { useMemo, useRef, useEffect } from 'react';
 import { formatBytes } from '../../lib/format';
 
-const PAD_X = 40;
-const PAD_TOP = 16;
-const AXIS_H = 36;
-const Y_TICKS = 5;
-const POINT_GAP = 60;
-
-const STATUSES = [
-  { key: 'success',   color: 'var(--accent)',     label: 'Success' },
-  { key: 'error',     color: 'var(--system-red)', label: 'Error'   },
-  { key: 'cancelled', color: 'var(--system-gray)',label: 'Cancelled' },
+const PIE_SIZE = 140;
+const PALETTE = [
+  '#007aff', '#5856d6', '#af52de', '#ff2d55', '#ff3b30',
+  '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#30b0c7',
+  '#a2845e', '#8e8e93',
 ];
 
+function colorForTask(taskId, lookup) {
+  if (lookup.has(taskId)) return lookup.get(taskId);
+  const c = PALETTE[lookup.size % PALETTE.length];
+  lookup.set(taskId, c);
+  return c;
+}
+
+function arcPath(cx, cy, r, startAngle, endAngle) {
+  const polar = (a) => [cx + r * Math.cos(a - Math.PI / 2), cy + r * Math.sin(a - Math.PI / 2)];
+  const [x1, y1] = polar(startAngle);
+  const [x2, y2] = polar(endAngle);
+  const large = endAngle - startAngle > Math.PI ? 1 : 0;
+  return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+}
+
 export default function CandleChart({ entries }) {
-  const series = useMemo(() => {
-    const sorted = (entries || [])
-      .slice()
-      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    const totals = { success: 0, error: 0, cancelled: 0 };
-    return sorted.map((e) => {
-      const status = STATUSES.find((s) => s.key === e.status)?.key || 'cancelled';
-      totals[status] += e.totalBytes || 0;
-      return {
-        id: e.id,
-        ts: new Date(e.timestamp),
-        success: totals.success,
-        error: totals.error,
-        cancelled: totals.cancelled,
-        total: totals.success + totals.error + totals.cancelled,
-      };
-    });
+  const { days, taskColors, taskNames } = useMemo(() => {
+    const byDay = new Map(); // dayKey -> Map<taskId, { name, bytes }>
+    const names = new Map();
+    for (const e of entries || []) {
+      if (!e.timestamp) continue;
+      const d = new Date(e.timestamp);
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!byDay.has(dayKey)) byDay.set(dayKey, new Map());
+      const dayMap = byDay.get(dayKey);
+      const id = e.taskId || 'unknown';
+      const prev = dayMap.get(id) || { name: e.taskName || 'Task', bytes: 0 };
+      prev.bytes += e.totalBytes || 0;
+      prev.name = e.taskName || prev.name;
+      dayMap.set(id, prev);
+      names.set(id, e.taskName || 'Task');
+    }
+    const sorted = Array.from(byDay.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dayKey, taskMap]) => {
+        const slices = Array.from(taskMap.entries()).map(([id, v]) => ({
+          taskId: id,
+          name: v.name,
+          bytes: v.bytes,
+        }));
+        const total = slices.reduce((s, x) => s + x.bytes, 0);
+        return { dayKey, slices, total };
+      });
+    const colors = new Map();
+    for (const day of sorted) {
+      for (const s of day.slices) colorForTask(s.taskId, colors);
+    }
+    return { days: sorted, taskColors: colors, taskNames: names };
   }, [entries]);
-
-  const chartHeight = 340;
-  const plotH = chartHeight - PAD_TOP - AXIS_H;
-  const innerW = Math.max(series.length - 1, 0) * POINT_GAP;
-  const width = Math.max(innerW + PAD_X * 2, 360);
-
-  const maxTotal = series.length > 0 ? series[series.length - 1].total : 0;
-  const yTicks = Array.from({ length: Y_TICKS + 1 }, (_, i) => (maxTotal * i) / Y_TICKS);
 
   const scrollRef = useRef(null);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
-  }, [series.length]);
+  }, [days.length]);
 
-  if (series.length === 0) {
+  if (days.length === 0) {
     return <div className="chart-empty">No backups yet</div>;
   }
 
-  const xAt = (i) => PAD_X + i * POINT_GAP;
-  const yAt = (v) => maxTotal > 0
-    ? PAD_TOP + plotH - (v / maxTotal) * plotH
-    : PAD_TOP + plotH;
-
-  // Build stacked-area paths bottom-up: cancelled → error → success on top.
-  const order = ['cancelled', 'error', 'success'];
-  const stacks = order.map((key, idx) => {
-    const lower = (i) => order.slice(0, idx).reduce((s, k) => s + series[i][k], 0);
-    const upper = (i) => lower(i) + series[i][key];
-    const top = series.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(upper(i))}`).join(' ');
-    const bottom = series
-      .map((_, i) => `L ${xAt(series.length - 1 - i)} ${yAt(lower(series.length - 1 - i))}`)
-      .join(' ');
-    return {
-      key,
-      d: `${top} ${bottom} Z`,
-      color: STATUSES.find((s) => s.key === key).color,
-    };
-  });
-
-  const lineD = series.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(p.total)}`).join(' ');
+  const r = (PIE_SIZE - 16) / 2;
+  const cx = PIE_SIZE / 2;
+  const cy = PIE_SIZE / 2;
 
   return (
-    <div className="candles">
-      <div className="candles__yaxis" aria-hidden="true">
-        {yTicks.slice().reverse().map((v, i) => (
-          <div key={i} className="candles__ytick">{v > 0 ? formatBytes(v) : '0'}</div>
-        ))}
-      </div>
-      <div className="candles__scroll" ref={scrollRef}>
-        <svg width={width} height={chartHeight} role="img" aria-label="Cumulative bytes backed up over time, by status">
-          {yTicks.map((_, i) => {
-            const y = PAD_TOP + (plotH * i) / Y_TICKS;
+    <div className="day-pies">
+      <div className="day-pies__scroll" ref={scrollRef}>
+        <div className="day-pies__row">
+          {days.map((day) => {
+            let acc = 0;
             return (
-              <line
-                key={i}
-                x1={PAD_X}
-                x2={width - PAD_X}
-                y1={y}
-                y2={y}
-                stroke="var(--separator)"
-                strokeWidth="0.5"
-              />
+              <div className="day-pie" key={day.dayKey}>
+                <svg
+                  width={PIE_SIZE}
+                  height={PIE_SIZE}
+                  role="img"
+                  aria-label={`Backups on ${day.dayKey}: ${formatBytes(day.total)}`}
+                >
+                  {day.total > 0 ? day.slices.map((s) => {
+                    const start = (acc / day.total) * Math.PI * 2;
+                    acc += s.bytes;
+                    const end = (acc / day.total) * Math.PI * 2;
+                    const color = taskColors.get(s.taskId);
+                    return (
+                      <path
+                        key={s.taskId}
+                        d={arcPath(cx, cy, r, start, end)}
+                        fill={color}
+                        opacity="0.92"
+                        stroke="var(--bg-content)"
+                        strokeWidth="1"
+                      >
+                        <title>{`${s.name} — ${formatBytes(s.bytes)}`}</title>
+                      </path>
+                    );
+                  }) : (
+                    <circle cx={cx} cy={cy} r={r} fill="var(--separator)" opacity="0.3" />
+                  )}
+                </svg>
+                <div className="day-pie__total">{formatBytes(day.total)}</div>
+                <div className="day-pie__date">
+                  {day.dayKey.slice(8, 10)}/{day.dayKey.slice(5, 7)}
+                </div>
+              </div>
             );
           })}
-          {stacks.map((s) => (
-            <path
-              key={s.key}
-              d={s.d}
-              fill={s.color}
-              opacity={s.key === 'success' ? 0.45 : s.key === 'error' ? 0.6 : 0.4}
-              stroke="none"
-            />
-          ))}
-          <path
-            d={lineD}
-            fill="none"
-            stroke="var(--accent)"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            opacity="0.95"
-          />
-          {series.map((p, i) => (
-            <g key={p.id}>
-              <circle cx={xAt(i)} cy={yAt(p.total)} r="3" fill="var(--accent)" stroke="var(--bg-content)" strokeWidth="1.5">
-                <title>{`${p.ts.toLocaleDateString()} — total ${formatBytes(p.total)}`}</title>
-              </circle>
-              <text
-                x={xAt(i)}
-                y={PAD_TOP + plotH + 14}
-                textAnchor="middle"
-                fontSize="10"
-                fill="var(--label-secondary)"
-              >
-                {String(p.ts.getDate()).padStart(2, '0')}/{String(p.ts.getMonth() + 1).padStart(2, '0')}
-              </text>
-            </g>
-          ))}
-        </svg>
-        <div className="candles__legend">
-          {STATUSES.map((s) => (
-            <span key={s.key}>
-              <span className="legend-dot" style={{ background: s.color }} /> {s.label}
+        </div>
+      </div>
+      {taskColors.size > 0 && (
+        <div className="day-pies__legend">
+          {Array.from(taskColors.entries()).map(([id, color]) => (
+            <span key={id}>
+              <span className="legend-dot" style={{ background: color }} />
+              {taskNames.get(id) || 'Task'}
             </span>
           ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }
