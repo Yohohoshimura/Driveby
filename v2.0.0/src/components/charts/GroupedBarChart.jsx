@@ -1,11 +1,12 @@
 import React, { useMemo } from 'react';
 
-const BAR_W = 14;
-const GROUP_GAP = 28;
-const PAD_X = 24;
+const BAR_W = 28;
+const GROUP_GAP = 80;
+const PAD_X = 32;
 const PAD_TOP = 16;
 const AXIS_H = 32;
 const Y_TICKS = 4;
+const MIN_WIDTH = 720;
 
 export default function GroupedBarChart({ tasks, history }) {
   const data = useMemo(() => {
@@ -24,15 +25,16 @@ export default function GroupedBarChart({ tasks, history }) {
 
   const chartHeight = 200;
   const plotH = chartHeight - PAD_TOP - AXIS_H;
-  const groupW = BAR_W * 2 + 4;
+  const groupW = BAR_W * 2 + 6;
   const innerW = data.length * (groupW + GROUP_GAP);
-  const width = Math.max(innerW + PAD_X * 2, 320);
+  const width = Math.max(innerW + PAD_X * 2, MIN_WIDTH);
 
   if (data.length === 0) {
     return <div className="chart-empty">No tasks</div>;
   }
 
-  const yTicks = Array.from({ length: Y_TICKS + 1 }, (_, i) => Math.round((maxCount * i) / Y_TICKS));
+  const yTicksRaw = Array.from({ length: Y_TICKS + 1 }, (_, i) => Math.round((maxCount * i) / Y_TICKS));
+  const yTicks = Array.from(new Set(yTicksRaw)).sort((a, b) => a - b);
 
   return (
     <div className="grouped-bars">
@@ -43,8 +45,8 @@ export default function GroupedBarChart({ tasks, history }) {
       </div>
       <div className="grouped-bars__scroll">
         <svg width={width} height={chartHeight} role="img" aria-label="Successes vs errors per task">
-          {yTicks.map((_, i) => {
-            const y = PAD_TOP + (plotH * i) / Y_TICKS;
+          {yTicks.map((v, i) => {
+            const y = maxCount > 0 ? PAD_TOP + plotH - (v / maxCount) * plotH : PAD_TOP + plotH;
             return (
               <line
                 key={i}
@@ -73,12 +75,12 @@ export default function GroupedBarChart({ tasks, history }) {
                 </rect>
                 <text
                   x={baseX + groupW / 2}
-                  y={chartHeight - 16}
+                  y={chartHeight - 14}
                   textAnchor="middle"
-                  fontSize="9"
+                  fontSize="11"
                   fill="var(--label-secondary)"
                 >
-                  {d.name.length > 10 ? d.name.slice(0, 9) + '…' : d.name}
+                  {d.name}
                 </text>
               </g>
             );

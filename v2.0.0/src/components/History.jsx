@@ -39,6 +39,11 @@ export default function History() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search history"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          name="driveby-history-search"
         />
         <select
           className="field field--compact"

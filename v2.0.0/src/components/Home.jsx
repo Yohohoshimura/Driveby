@@ -23,7 +23,7 @@ export default function Home() {
       <div className="section-head">
         <h2 className="title-2">Tasks</h2>
         <Button variant="primary" size="small" onClick={() => setShowForm(!showForm)}>
-          {showForm ? 'Cancel' : '+ New Task'}
+          {showForm ? 'Cancel' : 'New task'}
         </Button>
       </div>
 

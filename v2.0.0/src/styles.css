@@ -700,6 +700,8 @@ input, textarea { user-select: text; }
 }
 .setting-row__control {
   display: inline-flex; align-items: center; gap: 10px; justify-self: end;
+  justify-content: flex-end;
+  min-width: 72px;
 }
 
 /* ─── Info tip ─── */

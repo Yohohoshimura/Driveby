@@ -11,7 +11,7 @@ const NAV = [
     ],
   },
   {
-    section: 'App',
+    section: 'Application',
     items: [
       { id: 'settings', label: 'Settings', icon: Cog },
     ],
@@ -42,6 +42,11 @@ export default function Sidebar({ view, setView }) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search navigation"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          name="driveby-sidebar-search"
         />
       </div>
 

@@ -37,12 +37,17 @@ export default function NewTaskForm({ onAdd, onCancel, defaultDestination, showT
           onChange={(e) => setTask({ ...task, name: e.target.value })}
           placeholder="Documents — April"
           autoFocus
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          name="driveby-task-name"
         />
       </FormField>
 
       <FormField label="Source">
         <div className="field-row">
-          <input className="field field--readonly" readOnly value={task.source} placeholder="Choose folder…" />
+          <input className="field field--readonly" readOnly value={task.source} placeholder="Choose folder…" autoComplete="off" name="driveby-task-source" />
           <Button size="small" onClick={() => pick('source')}>Choose…</Button>
         </div>
       </FormField>
@@ -54,6 +59,8 @@ export default function NewTaskForm({ onAdd, onCancel, defaultDestination, showT
             readOnly
             value={task.destination || defaultDestination}
             placeholder={defaultDestination || 'Choose folder…'}
+            autoComplete="off"
+            name="driveby-task-destination"
           />
           <Button size="small" onClick={() => pick('destination')}>Choose…</Button>
         </div>

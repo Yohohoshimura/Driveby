@@ -41,6 +41,8 @@ export default function Settings() {
                 className="field field--readonly"
                 style={{ minWidth: 180 }}
                 aria-label="Default destination"
+                autoComplete="off"
+                name="driveby-default-destination"
               />
               <Button size="small" onClick={pickDefaultDestination}>Choose…</Button>
               {settings.defaultDestination && (
@@ -116,6 +118,11 @@ export default function Settings() {
             className="field field--textarea"
             rows={5}
             aria-label="Exclude patterns"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            name="driveby-exclude-patterns"
           />
         </div>
       </div>

@@ -5,6 +5,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use filetime::FileTime;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -51,7 +52,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    fn incremental(&self) -> bool { self.incremental.unwrap_or(true) }
     fn verify(&self) -> bool { self.verify.unwrap_or(false) }
     fn continue_on_error(&self) -> bool { self.continue_on_error.unwrap_or(true) }
     fn preserve_mtime(&self) -> bool { self.preserve_mtime.unwrap_or(true) }
@@ -186,6 +186,35 @@ fn long_path(p: &Path) -> PathBuf {
 #[cfg(not(windows))]
 fn long_path(p: &Path) -> PathBuf { p.to_path_buf() }
 
+// ─── Windows file attributes (preserves Hidden/System/ReadOnly so that
+// custom-folder-icon machinery — `desktop.ini` + the parent's System
+// attribute — keeps working in the destination tree) ─────────────────────
+
+#[cfg(windows)]
+fn read_attrs(p: &Path) -> Option<u32> {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::metadata(long_path(p)).ok().map(|m| m.file_attributes())
+}
+
+#[cfg(windows)]
+fn apply_attrs(p: &Path, attrs: u32) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
+    // Preserve only the user-meaningful bits — never propagate transient
+    // flags like ARCHIVE/REPARSE_POINT/etc. that the OS manages itself.
+    const KEEP: u32 = 0x1 /*READONLY*/ | 0x2 /*HIDDEN*/ | 0x4 /*SYSTEM*/;
+    let masked = attrs & KEEP;
+    if masked == 0 { return; }
+    let lp = long_path(p);
+    let wide: Vec<u16> = lp.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    unsafe { SetFileAttributesW(wide.as_ptr(), masked); }
+}
+
+#[cfg(not(windows))]
+fn read_attrs(_p: &Path) -> Option<u32> { None }
+#[cfg(not(windows))]
+fn apply_attrs(_p: &Path, _attrs: u32) {}
+
 // ─────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────
@@ -228,9 +257,11 @@ pub async fn run_backup(
 
     // Persist lastBackup in Rust, emit task-updated (centralized ownership).
     // Wrap in a timeout so a slow disk can never block the completion event.
-    if payload.success {
+    // Update on any non-cancelled completion (including partial failure) so
+    // long runs that hit a recoverable error still record when they ran.
+    if !payload.cancelled {
         let upd = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(15),
             update_last_backup(app, &task.id),
         ).await;
         match upd {
@@ -303,7 +334,7 @@ async fn execute(
 
     info!(task = %task.name, "walking source");
     let patterns = glob::parse_patterns(&settings.exclude_patterns);
-    let (files, total_bytes, skipped_count) = walk(&source, &patterns).await?;
+    let (files, dirs, total_bytes, skipped_count) = walk(&source, &patterns).await?;
     let total_files = files.len() as u64;
 
     // Sync mode: mirror source into the destination directly (no wrapper folder,
@@ -383,6 +414,43 @@ async fn execute(
         }
     }
 
+    // Mirror-delete pass: remove anything in the destination that is no
+    // longer in the source. Without this, deleted files / folders persist
+    // in the destination after a "sync".
+    let _ = app.emit(
+        "backup-progress",
+        ProgressPayload {
+            backup_id: backup_id.to_string(),
+            task_id: task.id.clone(),
+            progress: 100,
+            copied_bytes,
+            total_bytes,
+            copied_files,
+            total_files,
+            speed_bps: 0,
+            eta_seconds: None,
+            phase: "pruning",
+        },
+    );
+    let source_paths: HashSet<String> = files.iter().map(|f| f.rel.clone()).collect();
+    let mut deleted_files: u64 = 0;
+    if let Err(e) = prune_destination(&target, &source_paths, token, &mut deleted_files).await {
+        if token.is_cancelled() {
+            return Err(anyhow!("ABORTED"));
+        }
+        warn!("prune destination failed: {}", e);
+    }
+
+    // Mirror directory attributes (System bit on a folder + matching
+    // attributes on its `desktop.ini` are what make custom folder icons
+    // render in Explorer).
+    for (src_dir, rel) in &dirs {
+        if let Some(attrs) = read_attrs(src_dir) {
+            let dest_dir = target.join(rel);
+            apply_attrs(&dest_dir, attrs);
+        }
+    }
+
     // Force a final 100% emit so the UI reflects completion even when the
     // throttle would have skipped the last chunk.
     let _ = app.emit(
@@ -445,11 +513,65 @@ async fn execute(
         total_files: Some(total_files),
         duration_ms: Some(duration_ms),
         skipped: Some(skipped_count as u64),
-        cleaned: Some(0),
+        cleaned: Some(deleted_files),
         unchanged: Some(unchanged_files),
         failed: Some(failed_files),
         verified: Some(verified),
     })
+}
+
+/// Walk `root` and remove any file whose relative path is not present in
+/// `keep`, then prune now-empty directories. Skipped on cancellation.
+async fn prune_destination(
+    root: &Path,
+    keep: &HashSet<String>,
+    token: &CancellationToken,
+    deleted: &mut u64,
+) -> Result<()> {
+    let mut dirs_to_check: Vec<PathBuf> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![long_path(root)];
+    let root_canonical = long_path(root);
+
+    while let Some(dir) = stack.pop() {
+        if token.is_cancelled() { return Err(anyhow!("ABORTED")); }
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        loop {
+            if token.is_cancelled() { return Err(anyhow!("ABORTED")); }
+            let entry = match entries.next_entry().await {
+                Ok(Some(e)) => e,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() { continue; }
+            let rel = path.strip_prefix(&root_canonical).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if file_type.is_dir() {
+                stack.push(path.clone());
+                dirs_to_check.push(path);
+            } else if file_type.is_file() {
+                if !keep.contains(&rel_str) {
+                    if fs::remove_file(&path).await.is_ok() {
+                        *deleted += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom-up: remove now-empty directories. Sort deepest-first by length.
+    dirs_to_check.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
+    for d in dirs_to_check {
+        let _ = fs::remove_dir(&d).await; // succeeds only if empty
+    }
+    Ok(())
 }
 
 fn same_mtime(a: SystemTime, b: SystemTime) -> bool {
@@ -507,8 +629,12 @@ fn maybe_emit(
     );
 }
 
-async fn walk(root: &Path, patterns: &[String]) -> Result<(Vec<FileEntry>, u64, usize)> {
+async fn walk(
+    root: &Path,
+    patterns: &[String],
+) -> Result<(Vec<FileEntry>, Vec<(PathBuf, String)>, u64, usize)> {
     let mut files = Vec::new();
+    let mut dirs: Vec<(PathBuf, String)> = Vec::new();
     let mut total: u64 = 0;
     let mut skipped = 0usize;
     let mut stack: Vec<PathBuf> = vec![long_path(root)];
@@ -544,6 +670,7 @@ async fn walk(root: &Path, patterns: &[String]) -> Result<(Vec<FileEntry>, u64, 
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             if glob::matches(&rel_str, patterns) { continue; }
             if file_type.is_dir() {
+                dirs.push((path.clone(), rel_str));
                 stack.push(path);
             } else if file_type.is_file() {
                 let meta = match fs::metadata(&path).await {
@@ -564,7 +691,7 @@ async fn walk(root: &Path, patterns: &[String]) -> Result<(Vec<FileEntry>, u64, 
             }
         }
     }
-    Ok((files, total, skipped))
+    Ok((files, dirs, total, skipped))
 }
 
 async fn copy_with_retries<F: FnMut(u64)>(
@@ -637,6 +764,11 @@ async fn copy_file<F: FnMut(u64)>(
             let ft = FileTime::from_system_time(ft);
             let _ = filetime::set_file_mtime(&dest_l, ft);
         }
+    }
+    // Preserve Hidden / System / ReadOnly so things like `desktop.ini`
+    // (which drives custom Windows folder icons) keep their attributes.
+    if let Some(attrs) = read_attrs(src) {
+        apply_attrs(dest, attrs);
     }
     Ok(())
 }
