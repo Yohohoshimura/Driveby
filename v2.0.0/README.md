@@ -1,8 +1,8 @@
-# BackupDrive 1.8
+# Driveby 2.0
 
 A local-drive backup app with a macOS-style sidebar UI — **Tauri 2 + Rust** backend, **React 18 + Vite** frontend.
 
-1.8 is a **correctness** release. It fixes six data-safety issues uncovered during the 1.7 audit.
+2.0 is the first stable release. All previous versions (`v1.0.1-beta` through `v1.7.0-beta`, plus the former `v1.8.0` correctness pass that was promoted into this release) are retained as **beta** snapshots in their own folders. The app was previously called **BackupDrive**.
 
 ## What's new in 1.8
 
@@ -22,7 +22,7 @@ All 1.7 features (hardlink incremental, restore, xxHash3 verify, retries, contin
 Same as 1.7 — see the 1.7 README, or:
 
 ```bash
-cd v1.8.0
+cd v2.0.0
 npm install
 npm run tauri dev
 npm run tauri build

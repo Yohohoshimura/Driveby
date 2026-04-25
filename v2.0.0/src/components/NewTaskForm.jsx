@@ -59,7 +59,7 @@ export default function NewTaskForm({ onAdd, onCancel, defaultDestination, showT
         </div>
       </FormField>
 
-      <FormField label="Schedule" hint="Automatic runs require BackupDrive to be open">
+      <FormField label="Schedule" hint="Automatic runs require Driveby to be open">
         <select
           className="field"
           value={task.schedule}

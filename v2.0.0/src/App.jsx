@@ -6,12 +6,14 @@ import Toolbar from './components/Toolbar';
 import Home from './components/Home';
 import History from './components/History';
 import Settings from './components/Settings';
+import Statistics from './components/Statistics';
 import ConfirmDialog from './components/ConfirmDialog';
 import Toast from './components/Toast';
 
 const TITLES = {
   home: 'Tasks',
   history: 'History',
+  statistics: 'Statistics',
   settings: 'Settings',
 };
 
@@ -49,7 +51,8 @@ function Shell() {
     { key: ',', ctrl: true, handler: () => setView('settings') },
     { key: '1', ctrl: true, handler: () => setView('home') },
     { key: '2', ctrl: true, handler: () => setView('history') },
-    { key: '3', ctrl: true, handler: () => setView('settings') },
+    { key: '3', ctrl: true, handler: () => setView('statistics') },
+    { key: '4', ctrl: true, handler: () => setView('settings') },
     { key: 's', ctrl: true, handler: () => setSidebarOpen((v) => !v) },
   ]);
 
@@ -68,6 +71,7 @@ function Shell() {
           <div className="content__inner">
             {view === 'home' && <Home />}
             {view === 'history' && <History />}
+            {view === 'statistics' && <Statistics />}
             {view === 'settings' && <Settings />}
           </div>
         </main>

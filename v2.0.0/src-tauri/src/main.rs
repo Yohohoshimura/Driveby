@@ -125,7 +125,7 @@ fn setup_logging(app: &tauri::AppHandle) {
         Err(_) => return,
     };
     let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "backupdrive.log");
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "driveby.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     // Leak the guard — lives for program lifetime.
     std::mem::forget(guard);
@@ -159,7 +159,7 @@ fn main() {
                 let _ = std::fs::create_dir_all(&dir);
             }
             setup_logging(&app.handle());
-            info!("BackupDrive 1.7 starting");
+            info!("Driveby 2.0 starting");
             scheduler::spawn(app.handle().clone());
             Ok(())
         });

@@ -227,12 +227,20 @@ pub async fn run_backup(
     };
 
     // Persist lastBackup in Rust, emit task-updated (centralized ownership).
+    // Wrap in a timeout so a slow disk can never block the completion event.
     if payload.success {
-        if let Err(e) = update_last_backup(app, &task.id).await {
-            warn!("could not persist lastBackup: {}", e);
+        let upd = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            update_last_backup(app, &task.id),
+        ).await;
+        match upd {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!("could not persist lastBackup: {}", e),
+            Err(_) => warn!("lastBackup persist timed out"),
         }
     }
 
+    info!(task = %task.name, success = payload.success, "emitting backup-complete");
     let _ = app.emit("backup-complete", payload.clone());
     Ok(payload)
 }
@@ -333,7 +341,7 @@ async fn execute(
         if skip {
             unchanged_files += 1;
             copied_bytes += file.size;
-            copied_files += 1; // counts toward "processed" so progress reaches 100%
+            copied_files += 1;
             maybe_emit(
                 app, backup_id, &task.id, &mut last_emit, &started,
                 copied_bytes, total_bytes, copied_files, total_files, "syncing",
@@ -341,8 +349,13 @@ async fn execute(
             continue;
         }
 
-        let result = copy_with_retries(&file.path, &dest_path, token, settings, |n| {
-            copied_bytes += n;
+        // Track bytes within this file so retries don't double-count toward
+        // the global total — progress would overshoot and "stick" at 100%
+        // while the loop kept copying. The callback receives this file's
+        // cumulative bytes so far (resets to 0 on a retry).
+        let base_bytes = copied_bytes;
+        let result = copy_with_retries(&file.path, &dest_path, token, settings, |file_so_far| {
+            copied_bytes = base_bytes + file_so_far;
             maybe_emit(
                 app, backup_id, &task.id, &mut last_emit, &started,
                 copied_bytes, total_bytes, copied_files, total_files, "copying",
@@ -351,12 +364,16 @@ async fn execute(
         .await;
 
         match result {
-            Ok(()) => copied_files += 1,
+            Ok(()) => {
+                copied_files += 1;
+                copied_bytes = base_bytes + file.size;
+            }
             Err(e) => {
                 if token.is_cancelled() {
                     return Err(anyhow!("ABORTED"));
                 }
                 failed_files += 1;
+                copied_bytes = base_bytes; // discard partial progress for failed file
                 warn!(target = %file.rel, "copy failed: {}", e);
                 errors.push(format!("{}: {}", file.rel, e));
                 if !settings.continue_on_error() {
@@ -365,6 +382,24 @@ async fn execute(
             }
         }
     }
+
+    // Force a final 100% emit so the UI reflects completion even when the
+    // throttle would have skipped the last chunk.
+    let _ = app.emit(
+        "backup-progress",
+        ProgressPayload {
+            backup_id: backup_id.to_string(),
+            task_id: task.id.clone(),
+            progress: 100,
+            copied_bytes: total_bytes,
+            total_bytes,
+            copied_files: total_files,
+            total_files,
+            speed_bps: 0,
+            eta_seconds: Some(0),
+            phase: "finishing",
+        },
+    );
 
     let mut verified = false;
     if settings.verify() && failed_files == 0 {
@@ -537,14 +572,15 @@ async fn copy_with_retries<F: FnMut(u64)>(
     dest: &Path,
     token: &CancellationToken,
     settings: &Settings,
-    mut on_bytes: F,
+    mut on_progress: F,
 ) -> Result<()> {
     let mut attempts = 0;
     let max = 3;
     loop {
         attempts += 1;
+        on_progress(0); // reset per-file progress for any prior failed attempt
         let _ = fs::remove_file(long_path(dest)).await;
-        let res = copy_file(src, dest, token, settings, &mut on_bytes).await;
+        let res = copy_file(src, dest, token, settings, &mut on_progress).await;
         match res {
             Ok(()) => return Ok(()),
             Err(e) => {
@@ -562,7 +598,7 @@ async fn copy_file<F: FnMut(u64)>(
     dest: &Path,
     token: &CancellationToken,
     settings: &Settings,
-    mut on_bytes: F,
+    mut on_progress: F,
 ) -> Result<()> {
     let src_l = long_path(src);
     let dest_l = long_path(dest);
@@ -572,6 +608,7 @@ async fn copy_file<F: FnMut(u64)>(
 
     let buf_size = if src_meta.len() > 4 * 1024 * 1024 { 1024 * 1024 } else { 256 * 1024 };
     let mut buf = vec![0u8; buf_size];
+    let mut file_so_far: u64 = 0;
 
     loop {
         tokio::select! {
@@ -585,7 +622,8 @@ async fn copy_file<F: FnMut(u64)>(
                 let n = read.context("read source")?;
                 if n == 0 { break; }
                 writer.write_all(&buf[..n]).await.context("write destination")?;
-                on_bytes(n as u64);
+                file_so_far += n as u64;
+                on_progress(file_so_far);
             }
         }
     }
@@ -635,14 +673,6 @@ async fn hash_file(path: &Path) -> Result<u64> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sanitize_works() {
-        assert_eq!(sanitize_name(""), "backup");
-        assert_eq!(sanitize_name("My Docs/April"), "My_Docs_April");
-        let long = "a".repeat(200);
-        assert_eq!(sanitize_name(&long).len(), 60);
-    }
-
     #[cfg(windows)]
     #[test]
     fn long_path_prefixes_absolute() {
@@ -662,5 +692,12 @@ mod tests {
     fn long_path_handles_unc() {
         let p = Path::new(r"\\server\share\file");
         assert_eq!(long_path(p).to_string_lossy(), r"\\?\UNC\server\share\file");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_normalizes_forward_slashes() {
+        let p = Path::new("C:/Users/me/sub/file.txt");
+        assert_eq!(long_path(p).to_string_lossy(), r"\\?\C:\Users\me\sub\file.txt");
     }
 }

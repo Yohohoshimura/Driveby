@@ -1,6 +1,6 @@
 import React from 'react';
 import Button from './common/Button';
-import { formatTime, formatBytes, formatSpeed, formatDuration } from '../lib/format';
+import { formatTime, formatBytes } from '../lib/format';
 
 export default function TaskCard({ task, backup, onRun, onCancel, onDelete }) {
   const isRunning = !!backup;
@@ -21,7 +21,7 @@ export default function TaskCard({ task, backup, onRun, onCancel, onDelete }) {
               <span>
                 {backup.copiedFiles || 0} / {backup.totalFiles || 0} files · {formatBytes(backup.copiedBytes || 0)} of {formatBytes(backup.totalBytes || 0)}
               </span>
-              <span>{backup.progress || 0}%  ·  {formatSpeed(backup.speedBps)}  ·  ETA {formatDuration(backup.etaSeconds)}</span>
+              <span>{backup.progress || 0}%</span>
             </div>
             <div
               className="progressbar"
@@ -39,7 +39,7 @@ export default function TaskCard({ task, backup, onRun, onCancel, onDelete }) {
       <div className="task__actions">
         {!isRunning ? (
           <Button variant="primary" size="small" onClick={() => onRun(task)} ariaLabel={`Run ${task.name}`}>
-            Back Up
+            Back up
           </Button>
         ) : (
           <Button size="small" destructive onClick={() => onCancel(task.id)} ariaLabel={`Cancel ${task.name}`}>

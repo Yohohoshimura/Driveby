@@ -65,8 +65,8 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', resolvedTheme);
-    document.documentElement.setAttribute('data-accent', settings.accentColor);
-  }, [resolvedTheme, settings.accentColor]);
+    document.documentElement.setAttribute('data-accent', 'blue');
+  }, [resolvedTheme]);
 
   useEffect(() => {
     const unlisten = [];
@@ -112,7 +112,7 @@ export function AppProvider({ children }) {
         if (data.success) {
           showToast('Backup complete');
           if (settingsRef.current.showNotifications) {
-            bridge.notify('BackupDrive', `Backup of “${existingTask?.name || 'task'}” complete`);
+            bridge.notify('Driveby', `Backup of “${existingTask?.name || 'task'}” complete`);
           }
         } else if (data.cancelled) {
           showToast('Backup cancelled');

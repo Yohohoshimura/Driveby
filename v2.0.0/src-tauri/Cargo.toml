@@ -1,6 +1,6 @@
 [package]
-name = "backupdrive"
-version = "1.8.0"
+name = "driveby"
+version = "2.0.0"
 edition = "2021"
 description = "Desktop backup application"
 authors = ["ysh"]
@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 [[bin]]
-name = "backupdrive"
+name = "driveby"
 path = "src/main.rs"
 
 [profile.release]

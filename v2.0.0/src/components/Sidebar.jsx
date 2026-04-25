@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, FolderSync, Clock, Settings as Cog, HardDrive } from 'lucide-react';
+import { Search, FolderSync, Clock, Settings as Cog, HardDrive, BarChart3 } from 'lucide-react';
 
 const NAV = [
   {
@@ -7,6 +7,7 @@ const NAV = [
     items: [
       { id: 'home', label: 'Tasks', icon: FolderSync },
       { id: 'history', label: 'History', icon: Clock },
+      { id: 'statistics', label: 'Statistics', icon: BarChart3 },
     ],
   },
   {
@@ -72,8 +73,8 @@ export default function Sidebar({ view, setView }) {
         <div className="sidebar__brand">
           <HardDrive size={16} />
           <div className="sidebar__brand-text">
-            <div className="sidebar__brand-name">BackupDrive</div>
-            <div className="sidebar__brand-version">Version 1.6</div>
+            <div className="sidebar__brand-name">Driveby</div>
+            <div className="sidebar__brand-version">Version 2.0</div>
           </div>
         </div>
       </div>
