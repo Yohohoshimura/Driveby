@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import Button from './common/Button';
 import EmptyState from './common/EmptyState';
 import TaskCard from './TaskCard';
 import NewTaskForm from './NewTaskForm';
 import { useKeyboard } from '../hooks/useKeyboard';
+import { useExitTransition } from '../hooks/useExitTransition';
 
 export default function Home() {
   const {
@@ -22,6 +23,11 @@ export default function Home() {
   ], []));
 
   const editingTask = editingId ? tasks.find((t) => t.id === editingId) : null;
+  const formOpen = showForm || !!editingTask;
+  const { mounted: formMounted, state: formAnim } = useExitTransition(formOpen, 220);
+  const lastEditingRef = useRef(editingTask);
+  if (editingTask) lastEditingRef.current = editingTask;
+  const renderEditing = editingTask || (formAnim === 'exit' ? lastEditingRef.current : null);
 
   return (
     <>
@@ -38,10 +44,11 @@ export default function Home() {
         </Button>
       </div>
 
-      {(showForm || editingTask) && (
+      {formMounted && (
         <NewTaskForm
-          key={editingTask ? editingTask.id : 'new'}
-          initialTask={editingTask}
+          key={renderEditing ? renderEditing.id : 'new'}
+          initialTask={renderEditing}
+          dataState={formAnim}
           onAdd={(draft) => {
             const ok = addTask(draft);
             if (ok) {
@@ -51,7 +58,7 @@ export default function Home() {
             return ok;
           }}
           onSave={(draft) => {
-            editTask(editingTask.id, draft);
+            editTask(renderEditing.id, draft);
             closeForm();
             showToast('Task updated');
             return true;
@@ -66,10 +73,11 @@ export default function Home() {
         <EmptyState title="Empty" />
       ) : (
         <div className="group" role="list">
-          {tasks.map((task) => (
+          {tasks.map((task, i) => (
             <TaskCard
               key={task.id}
               task={task}
+              index={i}
               backup={activeBackups[task.id]}
               onRun={startBackup}
               onCancel={cancelBackup}

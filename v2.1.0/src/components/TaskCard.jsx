@@ -2,10 +2,10 @@ import React from 'react';
 import Button from './common/Button';
 import { formatTime } from '../lib/format';
 
-export default function TaskCard({ task, backup, onRun, onCancel, onModify, onDelete }) {
+export default function TaskCard({ task, backup, onRun, onCancel, onModify, onDelete, index = 0 }) {
   const isRunning = !!backup;
   return (
-    <article className="task">
+    <article className="task" style={{ '--stagger': `${Math.min(index, 8) * 40}ms` }}>
       <div className="task__body">
         <div className="task__name">{task.name}</div>
         <div className="task__paths" title={`${task.source} → ${task.destination}`}>

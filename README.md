@@ -1,3 +1,3 @@
 # Driveby
 
-Active release: [`v2.0.0`](./v2.0.0/). All earlier folders (`v1.0.1-beta` through `v1.7.0-beta`) are retained as historical **beta** snapshots.
+Active release: [`v2.1.0`](./v2.1.0/). [`v2.0.0`](./v2.0.0/) is retained alongside the `v1.x-beta` snapshots.

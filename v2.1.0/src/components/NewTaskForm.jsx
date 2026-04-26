@@ -5,7 +5,7 @@ import { bridge } from '../lib/tauri';
 
 const INITIAL = { name: '', source: '', destination: '', schedule: 'manual' };
 
-export default function NewTaskForm({ onAdd, onSave, onCancel, defaultDestination, showToast, initialTask }) {
+export default function NewTaskForm({ onAdd, onSave, onCancel, defaultDestination, showToast, initialTask, dataState }) {
   const isEdit = !!initialTask;
   const [task, setTask] = useState(() =>
     initialTask
@@ -40,7 +40,7 @@ export default function NewTaskForm({ onAdd, onSave, onCancel, defaultDestinatio
   };
 
   return (
-    <div className="card">
+    <div className="card" data-state={dataState}>
       <div className="card__head">{isEdit ? 'Modify Task' : 'New Task'}</div>
 
       <FormField label="Name" htmlFor="task-name">
