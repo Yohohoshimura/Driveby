@@ -138,10 +138,60 @@ This release pivoted the backup model and rebranded the app. Active folder is no
 **Session-end housekeeping**
 - The repo folder was renamed `backup-drive → Driveby` externally; we then attempted to undo it back to `backup-drive`. Inside the running session the rename failed (Windows refused — `Driveby` is the cwd of this Claude Code process). An empty `backup-drive` stub was cleaned up. The user must finish the rename from outside the session: `Rename-Item Driveby backup-drive` in PowerShell, plus rename the Claude project state dir `~/.claude/projects/C--Users-Yoshimura-Documents-Github-Driveby` → `…-backup-drive` so the JSONL transcript `e048a705-0e65-40a7-8cc1-450250038fc5.jsonl` keeps pairing.
 
+### 2.1 — motion + Modify Task
+
+`v2.1.0/`. Built on top of 2.0's sync engine; surface-level work, no backend behavioural change.
+
+- **Modify action.** `TaskCard` got a `Modify` button that disables while a backup is running and reuses `NewTaskForm` in edit mode. `Home.jsx` introduced an `editingId` state and an `useExitTransition`-backed mount/unmount so the form animates in/out cleanly. New `editTask(id, patch)` in `AppContext` writes through `bridge.saveTasks`; `lastEditingRef` keeps the form populated while it's animating away. Toast `"Task updated"`.
+- **Motion system.** `cubic-bezier(0.32, 0.72, 0, 1)` easing throughout. Route cross-fade in `App.jsx` (`<div className="view-route" key={view}>`); staggered task list mount via `--stagger` CSS var; sidebar item pop + icon scale; animated progress bar with shimmer; button press-scale + hover lift; tooltip fade/scale; Statistics chart mount-in (area path fade, bars grow upward, list rows stagger). Durations 100–340 ms.
+- **`prefers-reduced-motion`.** Single media-query block in `styles.css` collapses every animation/transition to ~0 ms.
+- **Sidebar/version label.** "Driveby — Version 2.1".
+
+### 2.2 — correctness pass + folder-icon round-trip + new app icon
+
+Triggered by an audit request: "analyse v2.1.0 to find some flaws". The audit surfaced 17+ issues across the Rust backup engine, the React UI, and dead code from the v2.0 hardlink-incremental flow. v2.2.0 addresses every actionable item, plus a new app icon and a folder-icon-mirroring fix that came in as separate follow-ups.
+
+**Concurrency / data-loss fixes (Rust):**
+1. **Atomic concurrent-run guard.** `BackupState::register` (which blindly inserted into a `DashMap`) replaced by `try_register`, which uses `dashmap::Entry::Vacant` and returns `None` if a token already exists for that task. `run_backup` returns "A backup is already running for this task" instead of letting two `execute()` futures stomp the same destination.
+2. **Exclude vs prune.** `walk()` now also returns `excluded: HashSet<String>` (relative paths matched by user patterns or by the new root-icon-marker rule). `prune_destination` accepts both that set *and* the patterns themselves and skips matching destination entries entirely. Adding `node_modules` to excludes no longer wipes a pre-existing `node_modules` from the destination.
+3. **Source/destination overlap rejection.** New `path_contains(parent, child)` helper (case-insensitive on Windows, canonicalisation pass) called twice in `execute()` to reject self-syncs and any nested overlap before any I/O.
+4. **2-second mtime tolerance.** `same_mtime` was strict whole-seconds equality, which meant exFAT/FAT destinations (which round to even seconds) re-copied every file every run. Now `(a.as_secs() - b.as_secs()).abs() <= 2`. Test added.
+5. **Restore durability.** `restore::copy()` calls `sync_all`, preserves mtime via `filetime::set_file_mtime`, surfaces I/O errors from `walk()` (the v2.1.0 `while let Ok(Some(entry))` pattern silently truncated on failure), and unlinks half-written files on failure so a re-run isn't tricked by size-collision.
+6. **`tasks.json` write-race.** New `persist::with_tasks_lock` (`tokio::sync::Mutex`) wraps every read-modify-write across both `save_tasks` (JS-driven) and `update_last_backup` (Rust-driven). `lastBackup` is now also only persisted on `payload.success`, not on any non-cancelled completion — partial-failure runs no longer reset the schedule clock.
+7. **`continueOnError` honoured for `create_dir_all`.** Failure on a parent dir bumps `failed_files` and continues instead of `?`-propagating.
+8. **Final-failure cleanup in `copy_with_retries`.** `fs::remove_file(long_path(dest))` runs before returning the final `Err` so a partial doesn't survive into the next sync.
+9. **No-thundering-herd scheduler.** `scheduler::spawn` keeps a `Mutex<HashSet<String>>` of task IDs observed in this process. First observation of a `last_backup == None` task starts the clock at "now" instead of the Unix epoch, so a fresh install doesn't fire every daily task 10 s after launch.
+10. **Destination root keeps its icon.** New `is_root_icon_marker(rel_str)` matches a top-level `desktop.ini` (case-insensitive, no `/` in the relative path); `walk()` adds it to `excluded` instead of the copy list, so it's neither propagated to the destination root nor pruned from there.
+11. **Per-subfolder icons round-trip.** Three compounding bugs in the post-copy directory-attribute mirror loop: `SetFileAttributesW`'s BOOL return was ignored (now logged with `GetLastError`); empty source subfolders had no destination counterpart so `apply_attrs` silently no-op'd (now `fs::create_dir_all(long_path(&dest_dir))` runs first); iteration order was walk order so a parent's `+R` could block a child's mutation (now sorted deepest-first by `rel.len()`).
+
+**JS / UI fixes:**
+12. **Single-slice pies render as `<circle>`.** `arcPath(start=0, end=2π)` is degenerate (start point equals end point); `CandleChart.jsx` now branches on `day.slices.length === 1` and emits a full circle.
+13. **Stable keybindings in `App.jsx`.** Wrapped the bindings array in `useMemo([], [])` so the `useKeyboard` effect doesn't re-attach the keydown listener every render.
+14. **`NewTaskForm.submit` simplified.** The `if (ok !== false && !ok?.then) return; return;` on the edit branch was dead — `onSave` always returns synchronously. Now just `onSave(task); return;`.
+15. **No dangling confirm promises.** `confirm()` previously dropped the prior `resolve` on the floor when called twice; it now calls `prev?.resolve(false)` inside the state updater before replacing it. `handleConfirm` does the same when settling.
+16. **Accent picker removed entirely.** The CSS palette stays (12 swatches), but `Settings.jsx` only exposes Theme. `data-accent` is hardcoded to `DEFAULT_ACCENT` (`'blue'`) in `AppContext`. The original audit added a 12-swatch picker; the user then asked to remove it and lock to blue, so the picker UI was deleted but the underlying values kept for forward-compat.
+17. **Dead-code prune.** Removed `Manifest`, `read_manifest` (Tauri command + `bridge.readManifest` wrapper), `incremental_from`, `MANIFEST_NAME`, `ERRORS_LOG`, `Settings._rest: serde_json::Value` (the `#[serde(flatten)]` field was unused and `Default::default()` on it produced an invalid map), `auto_cleanup_days`, `incremental` setting fields and their JS mirrors. README's "hardlink incremental / manifest.json safety" claims also gone.
+
+**App icon refresh.** User supplied a flat orange external-drive-with-down-arrow JPG (`backup-drive-icon-vector_872227-104-1291922728.jpg`). PowerShell `System.Drawing` script in-session re-rendered it onto a 1024×1024 white-background PNG; `npx tauri icon ./src-tauri/icon-source.png` regenerated every variant (root `.png`/`.ico`/`.icns`, all `Square*` for Windows store, full iOS `AppIcon-*` set, all Android `ic_launcher*`, master `source-1024.png`). `tauri.conf.json`'s icon list was already pointing at these filenames, so no config change. Working `icon-source.png` deleted afterwards. Subsequent cleanup pass deleted `node_modules/` (114 MB), `src-tauri/target/` (3.1 GB), `src-tauri/gen/` (373 KB) — all .gitignored.
+
+**Bug surfaced during dev:** initial `cp` of v2.1.0 → v2.2.0 dropped `useKeyboard.js`. Vite reported `Failed to resolve import "./hooks/useKeyboard"`. Restored the file from v2.1.0; no other follow-ups.
+
+### 2.3 — EN/FR language switcher
+
+`v2.3.0/`. Pure-JS i18n; no new dependencies.
+
+- **`src/lib/i18n.js`** — flat key namespace, two locales (`en`, `fr`). `translate(lang, key, params)` does the `{name}` replace. `SUPPORTED_LANGUAGES`, `LANGUAGE_LABELS`, `DEFAULT_LANGUAGE` exported. Fallback chain: requested locale → `en` → key itself. No build-time codegen.
+- **`src/hooks/useT.js`** — `useT()` returns a `useCallback`'d `t` bound to the current `settings.language`. Components do `const t = useT(); t('view.tasks')`. Inside `AppContext` itself the provider can't use the hook, so a local `tr()` helper reads from a `settingsRef` and calls `translate()` directly — that way async event listeners (the `backup-complete` toast in particular) always pick up the active language without re-binding.
+- **Settings — Language section.** New segmented picker between Appearance and Diagnostics, two buttons (English / Français). Writes `language` via `updateSetting`, which round-trips through `bridge.saveSettings` and re-renders every consumer of `useT`.
+- **Persistence.** `language: "en"` added to `default_settings()` in `src-tauri/src/main.rs` and `DEFAULT_SETTINGS` in `AppContext.jsx`. Validated against `SUPPORTED_LANGUAGES` at the read site so an unknown stored value falls back to `en` instead of crashing.
+- **Translation coverage.** Every user-visible string in `App`, `Sidebar` (sections, items, search placeholder + aria, brand version, region aria), `Toolbar`, `Home`, `TaskCard` (last-run line interpolated, all four buttons + their aria-labels, schedule labels), `NewTaskForm` (every label/placeholder/option/error/dialog title), `Settings` (every section header, every label, every InfoTip, theme options, log button + toast), `History` (header, search, filter labels + `<select>` options, all column headers, status badges, all three row actions, empty state), `Statistics` (block headers, both chart `aria-label`s, the `<title>` tooltips inside `GroupedBarChart`, both empty states, legend), `ConfirmDialog` (Cancel + OK fallback). Brand "Driveby" intentionally untranslated.
+- **Behavioural shape.** No re-mount when language changes — the picker just bumps `settings.language`, every `t()` consumer reads it, React re-renders. Sidebar item search filtering already operates on the localised label list because the `useMemo` depends on `t`.
+- **Sidebar version label.** Bumped to "Version 2.3".
+
 ## Key design decisions
 
 - Tauri 2 desktop-only: dropped `[lib]` crate stanza (would be needed for mobile targets).
-- Settings `confirmBeforeBackup`, `showNotifications`, `theme`, `accentColor` are UI-only; they round-trip through Rust's `Settings` struct via `#[serde(flatten)] _rest: Value` so the backend doesn't need to know about them.
+- Settings `confirmBeforeBackup`, `showNotifications`, `theme`, `accentColor`, `language`, `sidebarOpen`, `lastView` are UI-only. They live in `settings.json` but the Rust `Settings` struct only deserialises the fields the engine actually needs — extras are ignored on the way in and round-tripped untouched on the way out via the JS-side full-object `bridge.saveSettings`. (The earlier `#[serde(flatten)] _rest: Value` field was deleted in 2.2 — `Default` on `Value` is `Null`, not a map, which made `Settings::default()` produce an invalid flatten field.)
 - Drag-and-drop of folders into forms removed (Tauri webview doesn't expose absolute paths for dropped files the way Electron did). "Choose…" button replaces it.
 - Scheduler stays in React — automatic runs require Driveby (formerly BackupDrive) to be open (same as 1.5).
 - 2.0 sync model: source ↔ destination is a true mirror (copy + skip-if-same + delete-orphans). No timestamped wrappers, no manifest. Restore module still ships for legacy v1.7 dated backups.

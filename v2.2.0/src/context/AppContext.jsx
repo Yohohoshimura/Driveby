@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { v4 as uuidv4 } from 'uuid';
 import { bridge } from '../lib/tauri';
 import { useSystemTheme } from '../hooks/useSystemTheme';
-import { DEFAULT_ACCENT, ACCENT_COLORS } from '../lib/accent';
+import { DEFAULT_ACCENT } from '../lib/accent';
 
 const AppContext = createContext(null);
 
@@ -63,13 +63,9 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', resolvedTheme);
-    // Honour the user's stored accent (#14). Fall back to default if the
-    // value isn't one of the styled options.
-    const accent = ACCENT_COLORS.includes(settings.accentColor)
-      ? settings.accentColor
-      : DEFAULT_ACCENT;
-    document.documentElement.setAttribute('data-accent', accent);
-  }, [resolvedTheme, settings.accentColor]);
+    // Accent is fixed to the default — picker was removed from Settings.
+    document.documentElement.setAttribute('data-accent', DEFAULT_ACCENT);
+  }, [resolvedTheme]);
 
   useEffect(() => {
     const unlisten = [];

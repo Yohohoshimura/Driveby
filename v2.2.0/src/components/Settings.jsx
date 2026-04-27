@@ -4,7 +4,6 @@ import Button from './common/Button';
 import Toggle from './common/Toggle';
 import InfoTip from './common/InfoTip';
 import { bridge } from '../lib/tauri';
-import { ACCENTS } from '../lib/accent';
 
 export default function Settings() {
   const { settings, updateSetting, showToast } = useApp();
@@ -144,36 +143,6 @@ export default function Settings() {
                 {opt}
               </button>
             ))}
-          </div>
-        </div>
-
-        <div className="setting-row">
-          <div>
-            <div className="setting-row__label">Accent color</div>
-          </div>
-          <div className="setting-row__control" role="radiogroup" aria-label="Accent color" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {ACCENTS.map((a) => {
-              const selected = settings.accentColor === a.key;
-              return (
-                <button
-                  key={a.key}
-                  role="radio"
-                  aria-checked={selected}
-                  aria-label={a.label}
-                  title={a.label}
-                  onClick={() => updateSetting('accentColor', a.key)}
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: '50%',
-                    background: a.color,
-                    border: selected ? '2px solid var(--label-primary)' : '2px solid transparent',
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                />
-              );
-            })}
           </div>
         </div>
 
