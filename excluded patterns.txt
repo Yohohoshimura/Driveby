@@ -1,0 +1,22 @@
+## exclude patterns - this file give a summary list of excluded patterns if the folder of the app is within a task process
+
+node_modules
+dist
+build
+out
+.next
+.nuxt
+.vite
+.parcel-cache
+.cache
+.turbo
+.svelte-kit
+coverage
+*.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
