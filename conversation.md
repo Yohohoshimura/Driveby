@@ -1,6 +1,6 @@
 # BackupDrive — Conversation Log
 
-A compressed record of the decisions and changes made across this project's evolution from 0.0.1 (pre-rename 1.0.1) up through the current 1.3 release. Full raw transcript lives in the local Claude Code project log.
+A compressed record of the decisions and changes made across this project's evolution from 0.0.1 (pre-rename 1.0.1) up through the current 1.4 release. Full raw transcript lives in the local Claude Code project log.
 
 ## Timeline
 
@@ -206,28 +206,67 @@ Test added: `icon_descriptor_matches_desktop_ini_at_any_depth` covers root-level
 
 Folder layout reshuffled to match the conceptual phasing of the project: the `v1.x-beta` Electron snapshots are now `v0.x-beta` (pre-1.0 betas), and the `v2.x` Tauri-rebrand series is now `v1.x` (the actual 1.0+ shipping line).
 
-| Before | After |
-|--------|-------|
-| `v1.0.1-beta` | `v0.0.1-beta` |
-| `v1.1.0-beta` | `v0.1.0-beta` |
-| `v1.2.0-beta` | `v0.2.0-beta` |
-| `v1.3.0-beta` | `v0.3.0-beta` |
-| `v1.4.0-beta` | `v0.4.0-beta` |
-| `v1.5.0-beta` | `v0.5.0-beta` |
-| `v1.6.0-beta` | `v0.6.0-beta` |
-| `v1.7.0-beta` | `v0.7.0-beta` |
-| `v1.0.0`      | `v1.0.0` |
-| `v1.1.0`      | `v1.1.0` |
-| `v1.2.0`      | `v1.2.0` |
-| `v1.3.0`      | `v1.3.0` |
+| Before        | After          |
+|---------------|----------------|
+| `v1.0.1-beta` | `v0.0.1-beta`  |
+| `v1.1.0-beta` | `v0.1.0-beta`  |
+| `v1.2.0-beta` | `v0.2.0-beta`  |
+| `v1.3.0-beta` | `v0.3.0-beta`  |
+| `v1.4.0-beta` | `v0.4.0-beta`  |
+| `v1.5.0-beta` | `v0.5.0-beta`  |
+| `v1.6.0-beta` | `v0.6.0-beta`  |
+| `v1.7.0-beta` | `v0.7.0-beta`  |
+| `v2.0.0`      | `v1.0.0`       |
+| `v2.1.0`      | `v1.1.0`       |
+| `v2.2.0`      | `v1.2.0`       |
+| `v2.3.0`      | `v1.3.0`       |
 
-Done via `git mv`. The last move (`v1.3.0` → `v1.3.0`) was blocked by a running Vite dev server on port 1420 holding `node_modules`/watching `src`; the user finished it from outside the dev session after stopping the server. Internal version strings inside each folder (`package.json`, `Cargo.toml`, `tauri.conf.json`, README, sidebar label, `info!()` startup line) were intentionally left at their original values — the rename is about the directory layout, not a re-tagging of the codebase. Earlier sections of this log refer to the old folder names because that's how things were named at the time; that history is preserved deliberately.
+Done via `git mv`. The last move (`v2.3.0` → `v1.3.0`) was blocked by a running Vite dev server on port 1420 holding `node_modules`/watching `src`; the user finished it from outside the dev session after stopping the server. Internal version strings inside each folder (`package.json`, `Cargo.toml`, `tauri.conf.json`, README, sidebar label, `info!()` startup line) were then *also* re-tagged in a follow-up pass so the codebase matches the directory layout: pre-Tauri Electron snapshots now report `0.x-beta`, the Tauri-rebrand series now reports `1.x`. Earlier sections of this log still refer to the *original* folder/version names ("Driveby 2.0 starting", `v2.1.0`, etc.) because that's how things were named at session time; the renumber row in this section is the canonical mapping.
+
+### 1.4 — Rust audit pass
+
+Triggered by an explicit checklist review request covering safety, idiom, ownership, errors, performance, modules, tests, logging, deps, and code clarity, plus three sanity-check questions ("would clippy be clean?", "production-deployable?", "idiomatic?"). `v1.4.0/` was seeded by `cp -r v1.3.0 v1.4.0` (an earlier slip had left `v1.4.0/` as an empty directory, so the first pass nested everything inside `v1.4.0/v1.3.0/`; that nested copy was deleted afterwards once the audit edits had landed in the real `v1.4.0/` tree). Verified end-to-end with `cargo check` (clean), `cargo clippy -- -D warnings` (clean), `cargo test` (**19/19 pass**), `cargo fmt --check` (clean).
+
+**Correctness fixes:**
+
+- **Cancellation no longer relies on error-string matching.** `run_backup()` previously checked `err.to_string().contains("ABORTED")` to decide if a returned error was a user-initiated cancel; that's load-bearing on a string literal that anyone could change. Replaced with `let cancelled = token.is_cancelled();` snapshot taken before `state.unregister()`. The `CancellationToken` is now authoritative. Inner pipeline still returns `Err(anyhow!(CANCELLED_MSG))` on token-trip, but the message is no longer matched anywhere — `CANCELLED_MSG` is a single named constant just for grep-ability.
+- **`path_contains` Windows-canonicalize asymmetry.** Surfaced by a new `path_contains_child_is_true` test: on Windows, `std::fs::canonicalize` prepends `\\?\` (and converts UNC paths to `\\?\UNC\…`) on existing paths but not on non-existing ones. If one input was canonicalisable and the other wasn't, the prefix check would never match. `normalize_for_compare()` now strips `\\?\UNC\` (rewriting back to `\\…`) and `\\?\` so both sides agree on surface form. Production already validated both inputs to exist before the call, so this only mattered when the source had been short-name-expanded (`YOSHIM~1`) — but the fix is the right invariant either way.
+- **`Mutex` poisoning won't kill the scheduler.** `seen.lock().unwrap()` in `scheduler::tick()` panicked on poisoning. Replaced with `.unwrap_or_else(|poisoned| poisoned.into_inner())` — worst case is one stale "first observation" record; far better than the scheduler thread dying silently after an earlier panic.
+- **`continueOnError` honoured for ETA division.** `maybe_emit()` had a manual `if speed > 0` guard before dividing; clippy flagged the latent div-by-zero path if `speed` ever got cast down to 0 from a small `f64`. Rewrote as `total_bytes.saturating_sub(copied_bytes).checked_div(speed)` — single expression, no branch, no panic possible.
+
+**Idiom / clippy / fmt:**
+
+- `&normalized[2..]` after `starts_with(r"\\")` → `if let Some(rest) = normalized.strip_prefix(r"\\")` — manual prefix-strip lint cleared.
+- Two collapsible `if`s in `prune_destination` (the `is_dir()` no-op block and the `is_file && !keep && remove_file` chain) collapsed into single `&&`-chained guards.
+- `split(|c: char| c == ',' || c == '\n')` → `split([',', '\n'])` in `glob::parse_patterns`.
+- `setup_logging(&app.handle())` → `setup_logging(app.handle())` — `app.handle()` already returns `&AppHandle`, the `&` was an immediate-deref.
+- The four-deep nested `if let`/`if` chain in the size+mtime skip clause flattened into a single `&&`-chained boolean using `.is_some_and(...)`.
+- Unnecessary `dirs.iter().map(|(p, r)| (p.clone(), r.clone())).collect()` to produce a sortable vec replaced with `dirs.sort_by_key(...)` in place — `dirs` isn't reused after the dir-attrs loop, so re-cloning every `(PathBuf, String)` was pure waste. Made the `dirs` binding `mut`.
+
+**Polish:**
+
+- `main()`'s panic message changed from `"error while running tauri application"` to `"Tauri runtime failed to start (check logs in app_log_dir/driveby.log)"` so an end-user log dump tells operators where to look first.
+- `info!("Driveby 1.4 starting")` startup line, sidebar `Version 1.4` label (i18n EN + FR), `package.json` / `Cargo.toml` / `tauri.conf.json` all bumped to `1.4.0`.
+
+**Tests added (12 new, 19 total, all green):**
+
+- `path_contains_self_is_true`, `path_contains_child_is_true`, `path_contains_sibling_is_false`, `path_contains_prefix_lookalike_is_false` — security-relevant overlap rejection that previously had zero tests. The `_lookalike_` test specifically guards against `/a/b` falsely "containing" `/a/bb`. The `_child_` test created a `make_test_dir()` helper that `create_dir_all`s a temp subdir (Windows `temp_dir()` may return a short-name path that breaks canonicalize-vs-fallback comparison; in production both inputs exist so this is a test-fixture concern only).
+- `parse_patterns_drops_blank_and_whitespace_only`, `empty_pattern_list_matches_nothing`, `double_star_crosses_directories`, `question_mark_is_single_non_slash`, `special_regex_chars_are_escaped` — fills out the glob parser's edge-case coverage.
+
+**Items already passing without changes:**
+
+- `unsafe` is confined to `apply_attrs` (Win32 `SetFileAttributesW` + `GetLastError`). Buffer is null-terminated, lives until end of function, BOOL return is checked, error logged.
+- Module split (`glob`, `persist`, `restore`, `scheduler`, `backup`, `main`), `pub` boundaries (private internal helpers, narrow public surface for cross-module use), `tracing` exclusively in library code (no `println!`), `anyhow::Result` in library + `Result<_, String>` at the Tauri IPC boundary as the framework requires, `.context()` / `.with_context()` throughout.
+- Crates: every dep is doing real work, none heavy or trivially substitutable. `windows-sys` features pinned to the two minimum subsystems actually called.
+
+**Deferred for v1.5+:** `execute()` in `backup.rs` is ~350 lines of one function (preflight → walk → copy loop → prune → icon-verify → mirror-attrs → emit → optional verify). Splitting each phase into its own helper returning a typed `PhaseStats` accumulator would let each be tested in isolation. Refactor without functional change — explicitly out of scope for an audit pass.
 
 ## Key design decisions
 
 - Tauri 2 desktop-only: dropped `[lib]` crate stanza (would be needed for mobile targets).
-- Settings `confirmBeforeBackup`, `showNotifications`, `theme`, `accentColor`, `language`, `sidebarOpen`, `lastView` are UI-only. They live in `settings.json` but the Rust `Settings` struct only deserialises the fields the engine actually needs — extras are ignored on the way in and round-tripped untouched on the way out via the JS-side full-object `bridge.saveSettings`. (The earlier `#[serde(flatten)] _rest: Value` field was deleted in 2.2 — `Default` on `Value` is `Null`, not a map, which made `Settings::default()` produce an invalid flatten field.)
+- Settings `confirmBeforeBackup`, `showNotifications`, `theme`, `accentColor`, `language`, `sidebarOpen`, `lastView` are UI-only. They live in `settings.json` but the Rust `Settings` struct only deserialises the fields the engine actually needs — extras are ignored on the way in and round-tripped untouched on the way out via the JS-side full-object `bridge.saveSettings`. (The earlier `#[serde(flatten)] _rest: Value` field was deleted in 1.2 — `Default` on `Value` is `Null`, not a map, which made `Settings::default()` produce an invalid flatten field.)
 - Drag-and-drop of folders into forms removed (Tauri webview doesn't expose absolute paths for dropped files the way Electron did). "Choose…" button replaces it.
-- Scheduler stays in React — automatic runs require Driveby (formerly BackupDrive) to be open (same as 1.5).
-- 2.0 sync model: source ↔ destination is a true mirror (copy + skip-if-same + delete-orphans). No timestamped wrappers, no manifest. Restore module still ships for legacy v1.7 dated backups.
+- Scheduler in 0.5–0.7 stayed in React — automatic runs required the app window to be open. From 0.7 onwards the scheduler runs in Rust as a background tokio task, so closing the window no longer skips a run.
+- The 1.0 sync model: source ↔ destination is a true mirror (copy + skip-if-same + delete-orphans). No timestamped wrappers, no manifest. The restore module still ships for legacy `v0.7.0-beta` dated backups.
 - Windows attribute preservation is essential — without `READONLY | HIDDEN | SYSTEM` propagation, custom folder icons defined via `desktop.ini` silently break in the destination.
+- Cooperative cancellation flows through a `tokio_util::sync::CancellationToken` instead of error-message string-matching (1.4). The token is the single source of truth in `run_backup` for whether a returned `Err` represents a user-initiated cancel or a real failure.
